@@ -24,9 +24,9 @@
       "Chunk processing handoff"
     ],
     "defaultPrompt": [
-      "Open the existing Sloth D2C interceptor page for this project.",
-      "On first run, wait for workflow.submitted before generating code or writing implementationUrl.",
-      "In loop mode, read generated-preview annotation events and process only the pending ones."
+      "Use Sloth D2C to convert this Figma design into frontend code.",
+      "Open the Sloth D2C interceptor for my current project and wait for my grouping/config submission.",
+      "Continue the Sloth D2C preview annotation loop and fix the implementation based on my latest comments."
     ],
     "brandColor": "#F5821F",
     "composerIcon": "./assets/sloth.png",
