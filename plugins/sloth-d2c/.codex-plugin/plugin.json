@@ -1,0 +1,33 @@
+{
+  "name": "sloth-d2c",
+  "version": "0.1.10+codex.20260629212500",
+  "description": "Codex skills for running the Sloth D2C design-to-code workflow through Sloth-side persistent sessions, snapshots, and incremental annotation events.",
+  "author": {
+    "name": "TME Sloth"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Sloth D2C",
+    "shortDescription": "Run Sloth D2C with persistent Sloth session events.",
+    "longDescription": "Sloth D2C gives Codex skill workflows for using the existing Sloth interceptor page, waiting for first-run design submission before generating code, reading versioned Sloth session snapshots, handling only actionable pending human events, processing chunks, and writing agent results back to the session without registering MCP tools.",
+    "developerName": "TME Sloth",
+    "category": "Productivity",
+    "capabilities": [
+      "Design-to-code CLI workflow",
+      "Persistent Sloth sessions",
+      "Versioned annotation snapshots",
+      "Incremental event handling",
+      "Generated-preview annotation workflow",
+      "Design diff restoration loop",
+      "Focused annotation/event briefs",
+      "Codex browser screenshot handoff",
+      "Chunk processing handoff"
+    ],
+    "defaultPrompt": [
+      "Open the existing Sloth D2C interceptor page for this project.",
+      "On first run, wait for workflow.submitted before generating code or writing implementationUrl.",
+      "In loop mode, read generated-preview annotation events and process only the pending ones."
+    ],
+    "brandColor": "#6B8CFF"
+  }
+}

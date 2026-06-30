@@ -1,0 +1,20 @@
+{
+  "name": "sloth-d2c",
+  "interface": {
+    "displayName": "Sloth D2C"
+  },
+  "plugins": [
+    {
+      "name": "sloth-d2c",
+      "source": {
+        "source": "local",
+        "path": "./plugins/sloth-d2c"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
