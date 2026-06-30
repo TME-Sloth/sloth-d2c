@@ -7,6 +7,8 @@ description: "Run the end-to-end Sloth D2C workflow through the Sloth intercepto
 
 Use this skill to connect Codex with the Sloth D2C interceptor. The interceptor is the user interaction surface; Codex should read and write the target project's `.sloth/<fileKey>/<nodeId>/session/` state through the plugin scripts.
 
+Default user requests such as "convert this Figma design", "use Sloth D2C", or "use local cache" still start with the interceptor. Treat `--local` only as the data source for the interceptor and D2C commands. Do not bypass the interceptor unless the user explicitly asks for a standalone/silent/no-UI run, to skip the interceptor, or to refresh chunks only.
+
 ## Start
 
 Resolve `<plugin-root>` from this skill directory, then request the current handoff:
@@ -29,7 +31,7 @@ Use `--local` only when the user explicitly asks for Figma plugin/local cached d
 
 Open `commands.openUrl` in the Codex in-app browser. Confirm the Sloth D2C page and design preview are visible, then stop this turn and ask the user to continue after submitting the first workflow.
 
-Do not generate code, start the target app, write `implementationUrl`, ack events, or run long polling in this phase.
+Do not generate chunks, generate code, start the target app, write `implementationUrl`, ack events, or run long polling in this phase. This remains true when the user supplied `fileKey`, `nodeId`, `--local`, or clicked a default prompt that mentions conversion.
 
 ### `initial_generation_requested`
 

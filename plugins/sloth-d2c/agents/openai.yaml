@@ -4,4 +4,4 @@ interface:
   icon_small: "./assets/sloth.png"
   icon_large: "./assets/sloth.png"
   brand_color: "#F5821F"
-  default_prompt: "Use Sloth D2C to convert a Figma design into frontend code, then iterate from preview annotations."
+  default_prompt: "Open the Sloth D2C interceptor for a Figma design, wait for grouping/config submission, then generate and iterate from preview annotations."

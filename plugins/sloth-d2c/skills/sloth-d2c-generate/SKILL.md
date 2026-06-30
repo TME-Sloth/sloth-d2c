@@ -5,7 +5,7 @@ description: "Run the Sloth D2C CLI and prepare generated chunks for Codex proce
 
 # Sloth D2C Generate
 
-Use this skill to create or refresh Sloth D2C chunks/prompts. In the full workflow, first open the interceptor and wait for `workflow.submitted`; do not bypass user submission unless the user explicitly asks to run D2C or refresh design data.
+Use this skill to create or refresh Sloth D2C chunks/prompts. In the full workflow, first open the interceptor and wait for `workflow.submitted`; do not bypass user submission for ordinary requests such as "convert this Figma design" or "use local cache". Bypass the interceptor only when the user explicitly asks for a standalone/silent/no-UI run, to skip the interceptor, or to refresh chunks/design data only.
 
 ## Inputs
 
@@ -19,7 +19,7 @@ Use `--local` only when the user explicitly asks for Figma plugin/local cached d
 
 ## Direct CLI
 
-For standalone D2C requests, run `sloth d2c --file-key <fileKey> --node-id <nodeId> --json` with only the options the user requested, such as `--framework`, `--depth`, `--local`, `--update`, or `--silent`.
+For explicit standalone D2C requests, run `sloth d2c --file-key <fileKey> --node-id <nodeId> --json` with only the options the user requested, such as `--framework`, `--depth`, `--local`, `--update`, or `--silent`.
 
 After generation, parse the JSON output, record `chunksDir`, and confirm the required prompts exist. With grouped submissions, expect group chunk files plus `codeAggregation.md` and `finalGenerate.md`; with no groups, `codeAggregation.md` and `finalGenerate.md` are still required.
 

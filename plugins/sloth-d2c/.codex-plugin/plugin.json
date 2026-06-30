@@ -1,6 +1,6 @@
 {
   "name": "sloth-d2c",
-  "version": "0.1.12+codex.20260630",
+  "version": "0.1.13+codex.20260630",
   "description": "Codex skills for running the Sloth D2C design-to-code workflow through Sloth-side persistent sessions, snapshots, and incremental annotation events.",
   "author": {
     "name": "TME Sloth"
@@ -24,9 +24,9 @@
       "Chunk processing handoff"
     ],
     "defaultPrompt": [
-      "Use Sloth D2C to convert this Figma design into frontend code.",
-      "Open the Sloth D2C interceptor for my current project and wait for my grouping/config submission.",
-      "Continue the Sloth D2C preview annotation loop and fix the implementation based on my latest comments."
+      "Open the Sloth D2C interceptor for this Figma design so I can review grouping/config before code generation.",
+      "Use my local Sloth/Figma cache to open the Sloth D2C interceptor and prepare the conversion workflow.",
+      "Continue the Sloth D2C workflow after I submit grouping/config, then generate or update the implementation."
     ],
     "brandColor": "#F5821F",
     "composerIcon": "./assets/sloth.png",
