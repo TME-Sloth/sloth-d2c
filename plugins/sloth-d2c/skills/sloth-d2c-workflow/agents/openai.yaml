@@ -1,6 +1,6 @@
 interface:
   display_name: "Sloth D2C Workflow"
-  short_description: "Run the end-to-end Sloth D2C workflow through Codex."
+  short_description: "通过 Codex 运行端到端 Sloth D2C 工作流。"
   icon_small: "./assets/sloth.png"
   icon_large: "./assets/sloth.png"
   brand_color: "#F5821F"

@@ -1,17 +1,17 @@
 ---
 name: sloth-d2c-workflow
-description: "Run the end-to-end Sloth D2C workflow through the Sloth interceptor page, persistent sessions, snapshots, and incremental annotation events."
+description: "用于通过 Sloth 拦截页、持久化会话、快照和增量标注事件运行端到端 Sloth D2C 工作流。"
 ---
 
-# Sloth D2C Workflow
+# Sloth D2C 工作流
 
-Use this skill to connect Codex with the Sloth D2C interceptor. The interceptor is the user interaction surface; Codex should read and write the target project's `.sloth/<fileKey>/<nodeId>/session/` state through the plugin scripts.
+用于连接 Codex 与 Sloth D2C 拦截页。拦截页是用户交互界面；Codex 应通过插件脚本读写目标项目的 `.sloth/<fileKey>/<nodeId>/session/` 状态。
 
-Default user requests such as "convert this Figma design", "use Sloth D2C", or "use local cache" still start with the interceptor. Treat `--local` only as the data source for the interceptor and D2C commands. Do not bypass the interceptor unless the user explicitly asks for a standalone/silent/no-UI run, to skip the interceptor, or to refresh chunks only.
+默认用户请求，例如“转换这个 Figma 设计”“使用 Sloth D2C”或“使用本地缓存”，仍从拦截页开始。`--local` 只作为拦截页和 D2C 命令的数据源选择。除非用户明确要求独立/静默/无 UI 运行、跳过拦截页，或仅刷新 chunks，否则不要绕过拦截页。
 
-## Start
+## 开始
 
-Resolve `<plugin-root>` from this skill directory, then request the current handoff:
+从当前 skill 目录解析 `<plugin-root>`，然后请求当前 handoff：
 
 ```bash
 node <plugin-root>/scripts/sloth-d2c-state.mjs workflow-handoff \
@@ -21,64 +21,76 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs workflow-handoff \
   --agent-id codex
 ```
 
-Read `workflowPhase`, `recommendedAction`, `stopCondition`, `commands`, `nextEvent`, and `eventBrief`. Prefer the returned `commands.*` values over reconstructing script commands by hand.
+读取 `workflowPhase`、`recommendedAction`、`stopCondition`、`commands`、`nextEvent` 和 `eventBrief`。优先使用返回的 `commands.*`，不要手动重建脚本命令。
 
-Use `--local` only when the user explicitly asks for Figma plugin/local cached data. Use `--dev` or `--dev-port` only for repository development.
+只有当用户明确要求 Figma 插件/本地缓存数据时才使用 `--local`。`--dev` 或 `--dev-port` 仅用于仓库开发。
 
-## Browser Surface
+## 首次转码约定
 
-When the workflow says to open or keep the interceptor visible, try the Codex in-app browser first. If the Browser plugin is available, load its `control-in-app-browser` skill and open `commands.openUrl` through that browser surface.
+`workflow.submitted` 之后的第一次转码遵循旧版 `sloth d2c` skill 流程，唯一变化是浏览器界面改为 Codex 内置浏览器：
 
-Use shell helpers that open the system default browser, including `open`, `xdg-open`, `start`, `osascript`, AppleScript, or direct Chrome/Safari commands, only after the Codex in-app browser is unavailable or control fails. A `curl`/HTTP probe can confirm reachability, but it does not satisfy the "open the interceptor" step.
+1. 运行 Sloth D2C chunk 生成命令。
+2. 处理 group chunk prompts 和聚合 prompt。
+3. 使用最终 prompt 写入可运行的项目文件。
 
-## Phase Handling
+对于有分组的提交，有效 chunk 输出应包含一个或多个 group chunk 文件，例如 `0.md`、`1.md` 等，并且包含 `codeAggregation.md` 和 `finalGenerate.md`。当提交中存在分组时，只有 `codeAggregation.md` 和 `finalGenerate.md` 不够。首次实现代码开始前，必须先运行 chunk 生成并检查预期的 chunk 结构。
+
+## 浏览器界面
+
+当 workflow 要求打开或保持拦截页可见时，优先使用 Codex 内置浏览器。如果 Browser 插件可用，加载其 `control-in-app-browser` skill，并通过该浏览器界面打开 `commands.openUrl`。
+
+只有当 Codex 内置浏览器不可用或控制失败时，才使用会打开系统默认浏览器的 shell helper，例如 `open`、`xdg-open`、`start`、`osascript`、AppleScript 或直接调用 Chrome/Safari。`curl`/HTTP 探测可以确认可达性，但不等同于完成“打开拦截页”步骤。
+
+## 阶段处理
 
 ### `design_prepare`
 
-Open `commands.openUrl` in the Codex in-app browser. Confirm the Sloth D2C page and design preview are visible, then stop this turn and ask the user to continue after submitting the first workflow.
+在 Codex 内置浏览器中打开 `commands.openUrl`。确认 Sloth D2C 页面和设计预览可见，然后结束当前回合，等待用户提交首次 workflow 后继续。
 
-Do not generate chunks, generate code, start the target app, write `implementationUrl`, ack events, or run long polling in this phase. This remains true when the user supplied `fileKey`, `nodeId`, `--local`, or clicked a default prompt that mentions conversion.
+此阶段不要生成 chunks、不要生成代码、不要启动目标应用、不要写入 `implementationUrl`、不要 ack 事件，也不要运行长轮询。即使用户提供了 `fileKey`、`nodeId`、`--local`，或点击了提到转码的默认 prompt，也仍然如此。
 
 ### `initial_generation_requested`
 
-The user has submitted `workflow.submitted`.
+用户已提交 `workflow.submitted`。
 
-1. Ensure initial chunks/prompts exist. If `initialGeneration.mustRunSlothD2cBeforeCoding` is true, run `commands.generateChunks`.
-2. Claim the event before editing code.
-3. Generate or update the target implementation from the Sloth chunks/prompts and submitted context.
-4. Start or identify the target app preview.
-5. Write `implementationUrl` with the returned command pattern.
-6. Reopen or keep the Sloth interceptor in the Codex in-app browser.
-7. Run focused checks, then complete the event.
+1. 读取 `eventBrief` / `nextEvent`，理解提交的分组和生成意图。
+2. 写实现代码前先运行 `commands.generateChunks`。这对应旧流程中 `sloth d2c --json` 的第一步，会生成/刷新 chunk prompts。
+3. 校验生成的 chunk 目录。有分组提交时，应看到 `0.md`、`1.md` 等 group chunk 文件，并且有 `codeAggregation.md` 和 `finalGenerate.md`。
+4. 编辑项目代码前先 claim 事件。
+5. 基于 Sloth chunks/prompts 和提交上下文生成或更新目标实现。先处理 group chunks，再处理聚合/最终生成，匹配旧版 chunk -> aggregation -> final write 流程。
+6. 启动或识别目标应用预览。
+7. 使用返回的命令模式写入 `implementationUrl`。
+8. 重新打开或保持 Sloth 拦截页在 Codex 内置浏览器中。
+9. 运行聚焦校验，然后完成事件。
 
-Do not hand-write the first implementation from screenshots while required chunks/prompts are missing.
+必需的 chunks/prompts 缺失时，不要仅凭截图手写第一次实现。
 
 ### `initial_generating`
 
-Continue the first generation path until a reachable `implementationUrl` exists. Keep the Codex in-app browser on the Sloth interceptor, not the target preview.
+继续第一次生成路径，直到存在可访问的 `implementationUrl`。保持 Codex 内置浏览器停留在 Sloth 拦截页，而不是目标预览页。
 
 ### `implementation_loop`
 
-Open or keep the Sloth interceptor visible. Wait for the user to submit generated-preview annotations, or end the turn and let the user come back later.
+打开或保持 Sloth 拦截页可见。等待用户提交生成预览标注；也可以结束当前回合，让用户稍后回来继续。
 
 ### `implementation_annotations_requested`
 
-Use `commands.eventBrief` or `annotation-workflow` context to handle the current event. Focus on `changedCanvasAnnotations`, especially `target=implementation`, edit the local implementation, run focused checks, optionally run visual comparison, then complete the event.
+使用 `commands.eventBrief` 或 `annotation-workflow` 上下文处理当前事件。聚焦 `changedCanvasAnnotations`，尤其是 `target=implementation` 的标注；修改本地实现，运行聚焦校验，可选运行视觉对比，然后完成事件。
 
 ### `design_diff_requested` / `legacy_repair_requested`
 
-Use the event brief and visual comparison helpers to repair the implementation. If the request came from a human event, complete that event after the fix.
+使用事件摘要和视觉对比 helper 修复实现。如果请求来自用户事件，修复后完成该事件。
 
-## Event Semantics
+## 事件语义
 
-- `workflow.submitted`: first code generation can start.
-- `annotation.submitted`: user saved generated-preview annotations.
-- `diff.confirmed`: user accepted a visual diff repair request.
-- `repair.requested`: compatibility repair event.
-- `annotation.saved`: snapshot/history save only; it is not a default repair request.
+- `workflow.submitted`：可以开始第一次代码生成。
+- `annotation.submitted`：用户保存了生成预览标注。
+- `diff.confirmed`：用户接受了视觉 diff 修复请求。
+- `repair.requested`：兼容性修复事件。
+- `annotation.saved`：仅表示快照/历史保存，不是默认修复请求。
 
-Only process new, unacknowledged human events. `complete-event` is the normal way to write the agent result and ack the handled event.
+只处理新的、未确认的用户事件。`complete-event` 是写入 agent 结果并确认已处理事件的常规方式。
 
-## Closeout
+## 收尾
 
-Report the current phase, whether the interceptor is open, handled event ids, `implementationUrl` status, changed files, and checks run. In `design_prepare`, simply report that the page is open and waiting for user submission.
+报告当前阶段、拦截页是否已打开、已处理事件 id、`implementationUrl` 状态、变更文件和已运行校验。在 `design_prepare` 阶段，只需报告页面已打开并等待用户提交。

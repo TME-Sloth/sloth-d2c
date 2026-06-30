@@ -1,6 +1,6 @@
 interface:
   display_name: "Sloth D2C Design Diff"
-  short_description: "Compare Sloth/Figma designs with generated implementation previews."
+  short_description: "对比 Sloth/Figma 设计与生成实现预览。"
   icon_small: "./assets/sloth.png"
   icon_large: "./assets/sloth.png"
   brand_color: "#F5821F"

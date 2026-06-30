@@ -1,13 +1,13 @@
 ---
 name: sloth-d2c-session
-description: "Inspect and advance Sloth D2C persistent session state. Use when Codex needs to read user annotations, acknowledge processed events, or write agent results."
+description: "用于检查和推进 Sloth D2C 持久化会话；适用于读取用户标注、确认已处理事件或写入 agent 结果。"
 ---
 
-# Sloth D2C Session
+# Sloth D2C 会话
 
-Use this skill for the persistent session under `.sloth/<fileKey>/<nodeId>/session/`. Prefer `workflow-handoff` for normal work because it returns the phase, event brief, and ready-to-run commands.
+用于处理 `.sloth/<fileKey>/<nodeId>/session/` 下的持久化会话。常规工作优先使用 `workflow-handoff`，因为它会返回阶段、事件摘要和可直接运行的命令。
 
-## Main Entry
+## 主入口
 
 ```bash
 node <plugin-root>/scripts/sloth-d2c-state.mjs workflow-handoff \
@@ -17,26 +17,28 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs workflow-handoff \
   --agent-id codex
 ```
 
-Open `commands.openUrl` in the Codex in-app browser when the workflow asks for the interceptor. Keep that browser on the Sloth page; use headless/local tools for target preview screenshots.
+当 workflow 要求打开拦截页时，在 Codex 内置浏览器中打开 `commands.openUrl`。保持该浏览器停留在 Sloth 页面；目标预览截图使用 headless/local 工具完成。
 
-If the Browser plugin is available, load its `control-in-app-browser` skill and use that surface first. Use shell helpers that open the system default browser, including `open`, `xdg-open`, `start`, `osascript`, AppleScript, or direct Chrome/Safari commands, only after the Codex in-app browser is unavailable or control fails.
+如果 Browser 插件可用，先加载并使用其 `control-in-app-browser` skill。只有当 Codex 内置浏览器不可用或控制失败时，才使用会打开系统默认浏览器的 shell helper，例如 `open`、`xdg-open`、`start`、`osascript`、AppleScript 或直接调用 Chrome/Safari。
 
-## Phases
+## 阶段
 
-- `design_prepare`: open the interceptor, then stop and wait for user submission.
-- `initial_generation_requested`: handle `workflow.submitted`, generate from Sloth chunks/prompts, set `implementationUrl`, then complete the event.
-- `initial_generating`: finish first generation until `implementationUrl` is reachable.
-- `implementation_loop`: wait for generated-preview annotations.
-- `implementation_annotations_requested`: handle only the current submitted annotations and complete the event.
-- `design_diff_requested`: repair from visual diff context and complete the related event when applicable.
+- `design_prepare`：打开拦截页，然后停止并等待用户提交。
+- `initial_generation_requested`：处理 `workflow.submitted`，走首次转码流程：先运行/校验 Sloth D2C chunks，再消费 group chunks 与聚合/最终 prompts 写项目代码，设置 `implementationUrl`，最后完成事件。
+- `initial_generating`：继续第一次生成，直到存在可访问的 `implementationUrl`。
+- `implementation_loop`：等待用户提交生成预览标注。
+- `implementation_annotations_requested`：只处理当前提交的标注并完成事件。
+- `design_diff_requested`：根据视觉 diff 上下文修复，并在适用时完成关联事件。
 
-## Event Rules
+对于第一次有分组的提交，不要把只包含 `codeAggregation.md` 和 `finalGenerate.md` 的 chunk 目录视为完整。实现开始前应存在 `0.md`、`1.md` 等 group chunk 文件。
 
-- Process only new, unacknowledged human events.
-- Use event-focused context returned by the script instead of scanning all historical annotations.
-- Do not ack before the requested work is actually handled.
-- Use `complete-event` for normal completion; it writes `agent.result` and acks the event.
+## 事件规则
 
-## Command Source
+- 只处理新的、未确认的用户事件。
+- 使用脚本返回的事件聚焦上下文，不要默认扫描所有历史标注。
+- 请求的工作真正处理完成前不要 ack。
+- 正常完成时使用 `complete-event`；它会写入 agent 结果并确认事件。
 
-Prefer command strings returned by `workflow-handoff` / `workflow-guide` instead of reconstructing script arguments in the skill text.
+## 命令来源
+
+优先使用 `workflow-handoff` / `workflow-guide` 返回的命令字符串，不要根据 skill 文本重新拼接脚本参数。

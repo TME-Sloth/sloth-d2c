@@ -1,28 +1,34 @@
 ---
 name: sloth-d2c-generate
-description: "Run the Sloth D2C CLI and prepare generated chunks for Codex processing. Use when the user asks to run D2C, convert Figma to code, generate chunks, or continue Sloth code generation."
+description: "用于运行 Sloth D2C CLI、生成或刷新 chunks；适用于用户要求 D2C、Figma 转代码、生成 chunks 或继续 Sloth 代码生成。"
 ---
 
-# Sloth D2C Generate
+# Sloth D2C 生成
 
-Use this skill to create or refresh Sloth D2C chunks/prompts. In the full workflow, first open the interceptor and wait for `workflow.submitted`; do not bypass user submission for ordinary requests such as "convert this Figma design" or "use local cache". Bypass the interceptor only when the user explicitly asks for a standalone/silent/no-UI run, to skip the interceptor, or to refresh chunks/design data only.
+用于创建或刷新 Sloth D2C chunks/prompts。完整工作流中，先打开拦截页并等待 `workflow.submitted`；对“转换这个 Figma 设计”“使用本地缓存”等普通请求，不要绕过用户提交。只有当用户明确要求独立/静默/无 UI 运行、跳过拦截页，或仅刷新 chunks/设计数据时，才绕过拦截页。
 
-## Inputs
+## 输入
 
-Need `fileKey` and `nodeId`. Ask a short clarification only when they cannot be inferred from the current `.sloth` session.
+需要 `fileKey` 和 `nodeId`。只有无法从当前 `.sloth` 会话推断时，才简短询问用户。
 
-## Preferred Path
+## 首选路径
 
-In workflow mode, run the generation command returned by `workflow-handoff.commands.generateChunks`. It checks existing chunks, calls the Sloth D2C atomic CLI when needed, and validates the expected outputs.
+在 workflow 模式下，收到 `workflow.submitted` 后，第一步运行 `workflow-handoff.commands.generateChunks` 返回的生成命令。这等价于旧流程里的 `sloth d2c --file-key ... --node-id ... --json`：先准备 Codex 写代码前必须消费的 chunk prompts。
 
-Use `--local` only when the user explicitly asks for Figma plugin/local cached data. Otherwise use the default REST data source.
+命令完成后，校验 chunk 目录：
 
-## Direct CLI
+- 有分组的提交应包含 `0.md`、`1.md` 等 group chunk 文件，以及 `codeAggregation.md` 和 `finalGenerate.md`。
+- 无分组的提交可以只有 `codeAggregation.md` 和 `finalGenerate.md`。
+- 如果提交事件中存在分组，但目录里只有 `codeAggregation.md` 和 `finalGenerate.md`，应视为 chunks 不完整；编码前必须结合提交事件上下文重新运行生成。
 
-For explicit standalone D2C requests, run `sloth d2c --file-key <fileKey> --node-id <nodeId> --json` with only the options the user requested, such as `--framework`, `--depth`, `--local`, `--update`, or `--silent`.
+只有当用户明确要求 Figma 插件/本地缓存数据时才使用 `--local`。否则使用默认 REST 数据源。
 
-After generation, parse the JSON output, record `chunksDir`, and confirm the required prompts exist. With grouped submissions, expect group chunk files plus `codeAggregation.md` and `finalGenerate.md`; with no groups, `codeAggregation.md` and `finalGenerate.md` are still required.
+## 直接 CLI
 
-## Closeout
+对于明确的独立 D2C 请求，运行 `sloth d2c --file-key <fileKey> --node-id <nodeId> --json`，只附加用户要求的选项，例如 `--framework`、`--depth`、`--local`、`--update` 或 `--silent`。
 
-Report `chunksDir`, current workflow phase, pending human event status, and the recommended next step.
+生成后解析 JSON 输出，记录 `chunksDir`，并确认所需 prompts 存在。有分组提交时，应存在 group chunk 文件以及 `codeAggregation.md`、`finalGenerate.md`；无分组时仍必须有 `codeAggregation.md` 和 `finalGenerate.md`。
+
+## 收尾
+
+报告 `chunksDir`、group chunk 数量、`codeAggregation.md` 和 `finalGenerate.md` 是否存在、当前 workflow 阶段、待处理用户事件状态，以及建议的下一步。
