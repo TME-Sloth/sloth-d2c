@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import http from 'node:http'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -40,8 +41,90 @@ async function runCli(args, options = {}) {
   const { stdout } = await execFileAsync(process.execPath, [scriptPath, ...args], {
     maxBuffer: 10 * 1024 * 1024,
     ...options,
+    env: {
+      ...process.env,
+      SLOTH_DISABLE_CODEX_TOKEN_BRIDGE: '1',
+      ...(options.env || {}),
+    },
   })
   return JSON.parse(stdout)
+}
+
+async function createTokenBridgeServers() {
+  const registrations = []
+  const sockets = new Set()
+  const base = 43000 + Math.floor(Math.random() * 1000)
+
+  for (let offset = 0; offset < 100; offset += 2) {
+    const port = base + offset
+    const httpServer = http.createServer((req, res) => {
+      if (req.url?.startsWith('/validateToken')) {
+        res.setHeader('content-type', 'application/json')
+        res.end(JSON.stringify({ valid: false }))
+        return
+      }
+      res.end('ok')
+    })
+    const socketServer = net.createServer((socket) => {
+      sockets.add(socket)
+      socket.setEncoding('utf8')
+      socket.write(JSON.stringify({ type: 'welcome' }) + '\n')
+      let buffer = ''
+      socket.on('data', (chunk) => {
+        buffer += chunk
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+        for (const line of lines) {
+          if (!line.trim()) continue
+          const message = JSON.parse(line)
+          if (message.type === 'register-token') {
+            registrations.push(message)
+            socket.write(JSON.stringify({ type: 'token-registered', token: message.token }) + '\n')
+          }
+        }
+      })
+      socket.on('close', () => sockets.delete(socket))
+    })
+
+    try {
+      await new Promise((resolve, reject) => {
+        httpServer.once('error', reject)
+        httpServer.listen(port, resolve)
+      })
+      await new Promise((resolve, reject) => {
+        socketServer.once('error', reject)
+        socketServer.listen(port + 1, resolve)
+      })
+      return {
+        port,
+        registrations,
+        close: async () => {
+          for (const socket of sockets) socket.destroy()
+          await Promise.all([
+            new Promise((resolve, reject) => httpServer.close((error) => (error ? reject(error) : resolve()))),
+            new Promise((resolve, reject) => socketServer.close((error) => (error ? reject(error) : resolve()))),
+          ])
+        },
+      }
+    } catch {
+      await Promise.allSettled([
+        new Promise((resolve) => httpServer.close(() => resolve())),
+        new Promise((resolve) => socketServer.close(() => resolve())),
+      ])
+    }
+  }
+
+  throw new Error('Unable to allocate adjacent test ports')
+}
+
+async function waitFor(predicate, timeoutMs = 2000) {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < timeoutMs) {
+    const value = predicate()
+    if (value) return value
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  return predicate()
 }
 
 async function createWorkspace() {
@@ -369,6 +452,42 @@ async function main() {
     assert.match(defaultHandoff.commands.openUrl, /localhost:3100\/auth-page/)
     assert.equal(defaultHandoff.commands.startWorkflowDev, null)
     assert.deepEqual(defaultHandoff.warnings, [])
+
+    const tokenBridgeServers = await createTokenBridgeServers()
+    try {
+      const codexHandoff = await runCli(
+        [
+          'workflow-handoff',
+          '--workspace',
+          designPrepare.workspace,
+          '--file-key',
+          designPrepare.fileKey,
+          '--node-id',
+          designPrepare.nodeId,
+          '--agent-id',
+          'codex',
+          '--port',
+          String(tokenBridgeServers.port),
+        ],
+        {
+          env: {
+            SLOTH_DISABLE_CODEX_TOKEN_BRIDGE: '0',
+            CODEX_SHELL: '1',
+            CODEX_THREAD_ID: 'test-thread',
+          },
+        },
+      )
+      assert.equal(codexHandoff.codexTokenBridge.enabled, true)
+      assert.equal(codexHandoff.codexTokenBridge.status, 'started')
+      assert.equal(codexHandoff.codexTokenBridge.token, `sloth-d2c-${sessionId(designPrepare.fileKey, designPrepare.nodeId)}`)
+      await waitFor(() => tokenBridgeServers.registrations.length > 0)
+      assert.equal(tokenBridgeServers.registrations.length, 1)
+      assert.equal(tokenBridgeServers.registrations[0].token, codexHandoff.codexTokenBridge.token)
+      assert.equal(tokenBridgeServers.registrations[0].extra.workspaceRoot, designPrepare.workspace)
+      assert.equal(tokenBridgeServers.registrations[0].extra.source, 'codex-app-sloth-workflow')
+    } finally {
+      await tokenBridgeServers.close()
+    }
 
     const handoff = await runCli([
       'workflow-handoff',

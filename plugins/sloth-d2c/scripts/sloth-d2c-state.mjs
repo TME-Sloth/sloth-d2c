@@ -2,7 +2,7 @@
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { createRequire } from 'node:module'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
@@ -63,6 +63,26 @@ function sessionId(fileKey, nodeId) {
 
 function sessionDir(workspace, fileKey, nodeId) {
   return path.join(d2cDir(workspace, fileKey, nodeId), 'session')
+}
+
+function isCodexAppEnvironment(env = process.env) {
+  if (env.SLOTH_DISABLE_CODEX_TOKEN_BRIDGE === '1') return false
+  return (
+    env.CODEX_SHELL === '1' ||
+    Boolean(env.CODEX_THREAD_ID) ||
+    env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE === 'Codex Desktop' ||
+    env.__CFBundleIdentifier === 'com.openai.codex'
+  )
+}
+
+function processIsRunning(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
 }
 
 function legacySessionDir(workspace, fileKey, nodeId) {
@@ -636,6 +656,159 @@ function buildInterceptorUrl({ host = 'localhost', port = '3100', fileKey, nodeI
   url.searchParams.set('supportRoots', supportRoots)
   url.searchParams.set('dataSource', dataSource)
   return url.toString()
+}
+
+async function validateMcpToken({ host, port, token, timeoutMs = 700 }) {
+  if (!token) return { valid: false, checked: false, reason: 'missing-token' }
+  try {
+    const url = new URL(`http://${host}:${port}/validateToken`)
+    url.searchParams.set('token', token)
+    const response = await fetch(url, {
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: { accept: 'application/json' },
+    })
+    if (!response.ok) return { valid: false, checked: true, status: response.status }
+    const result = await response.json()
+    return { valid: Boolean(result?.valid), checked: true, status: response.status }
+  } catch (error) {
+    return {
+      valid: false,
+      checked: false,
+      reason: error instanceof Error ? error.message : String(error),
+    }
+  }
+}
+
+async function ensureCodexTokenBridge({ workspace, fileKey, nodeId, host, port, token, agentId }) {
+  const bridgeDir = sessionDir(workspace, fileKey, nodeId)
+  await fs.mkdir(bridgeDir, { recursive: true })
+  const metadataPath = path.join(bridgeDir, 'codex-token-bridge.json')
+  const logPath = path.join(bridgeDir, 'codex-token-bridge.log')
+  const existing = await readJson(metadataPath, null)
+  if (
+    existing?.token === token &&
+    String(existing?.host || '') === String(host) &&
+    String(existing?.port || '') === String(port) &&
+    processIsRunning(Number(existing?.pid))
+  ) {
+    return {
+      enabled: true,
+      status: 'running',
+      token,
+      pid: Number(existing.pid),
+      logPath,
+    }
+  }
+
+  const validation = await validateMcpToken({ host, port, token })
+  if (validation.valid) {
+    return {
+      enabled: true,
+      status: 'already-valid',
+      token,
+      logPath,
+      validation,
+    }
+  }
+  if (validation.checked === false && validation.reason) {
+    return {
+      enabled: true,
+      status: 'unavailable',
+      token,
+      logPath,
+      validation,
+    }
+  }
+
+  const socketPort = Number(port) + 1
+  const childSource = String.raw`
+const fs = require('node:fs');
+const net = require('node:net');
+const token = process.env.SLOTH_CODEX_TOKEN;
+const host = process.env.SLOTH_CODEX_HOST || 'localhost';
+const socketPort = Number(process.env.SLOTH_CODEX_SOCKET_PORT || 3101);
+const metadataPath = process.env.SLOTH_CODEX_METADATA_PATH;
+const logPath = process.env.SLOTH_CODEX_LOG_PATH;
+const extra = JSON.parse(process.env.SLOTH_CODEX_EXTRA || '{}');
+
+function log(...parts) {
+  const line = '[' + new Date().toISOString() + '] ' + parts.map((part) => typeof part === 'string' ? part : JSON.stringify(part)).join(' ') + '\n';
+  try { fs.appendFileSync(logPath, line); } catch {}
+}
+
+function finish(code) {
+  try {
+    const current = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+    if (current.pid === process.pid) fs.rmSync(metadataPath, { force: true });
+  } catch {}
+  process.exit(code);
+}
+
+const socket = net.createConnection({ host, port: socketPort }, () => {
+  const metadata = { pid: process.pid, token, host, port: socketPort - 1, socketPort, startedAt: new Date().toISOString() };
+  fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2) + '\n');
+  socket.write(JSON.stringify({ type: 'register-token', token, extra, timestamp: Date.now() }) + '\n');
+  log('registered token bridge', metadata);
+});
+
+socket.setEncoding('utf8');
+let buffer = '';
+socket.on('data', (chunk) => {
+  buffer += chunk;
+  const lines = buffer.split('\n');
+  buffer = lines.pop() || '';
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    log('socket message', line.trim());
+    try {
+      const message = JSON.parse(line);
+      if (message.type === 'submit-response' && message.token === token) finish(0);
+    } catch {}
+  }
+});
+socket.on('error', (error) => {
+  log('socket error', error && error.stack || String(error));
+  finish(1);
+});
+socket.on('close', () => {
+  log('socket closed');
+  finish(0);
+});
+setInterval(() => {
+  try { socket.write(JSON.stringify({ type: 'ping', timestamp: Date.now() }) + '\n'); } catch {}
+}, 30000);
+`
+  const outFd = await fs.open(logPath, 'a')
+  try {
+    const child = spawn(process.execPath, ['-e', childSource], {
+      detached: true,
+      stdio: ['ignore', outFd.fd, outFd.fd],
+      env: {
+        ...process.env,
+        SLOTH_CODEX_TOKEN: token,
+        SLOTH_CODEX_HOST: host,
+        SLOTH_CODEX_SOCKET_PORT: String(socketPort),
+        SLOTH_CODEX_METADATA_PATH: metadataPath,
+        SLOTH_CODEX_LOG_PATH: logPath,
+        SLOTH_CODEX_EXTRA: JSON.stringify({
+          workspaceRoot: workspace,
+          source: 'codex-app-sloth-workflow',
+          agentId,
+        }),
+      },
+    })
+    child.unref()
+    return {
+      enabled: true,
+      status: 'started',
+      token,
+      pid: child.pid,
+      logPath,
+      validation,
+    }
+  } finally {
+    await outFd.close()
+  }
 }
 
 async function firstReachableInterceptorUrl(candidates) {
@@ -1711,6 +1884,23 @@ async function workflowHandoff(workspace, args, agentId) {
     : null
   const phase = status.workflowPhase?.phase || 'design_prepare'
   const shouldStartDevInterceptor = phase === 'design_prepare' && status.devMode && !status.devInterceptorUrl
+  const openUrl = shouldStartDevInterceptor ? null : status.preferredInterceptorUrl || status.devInterceptorUrl || status.interceptorUrl
+  const explicitToken = args.token && args.token !== true ? String(args.token) : ''
+  const codexTokenBridge =
+    openUrl && isCodexAppEnvironment() && !explicitToken
+      ? await ensureCodexTokenBridge({
+          workspace,
+          fileKey,
+          nodeId,
+          host: String(args.host || 'localhost'),
+          port: String(args.port || '3100'),
+          token: new URL(openUrl).searchParams.get('token'),
+          agentId,
+        })
+      : {
+          enabled: false,
+          status: explicitToken ? 'explicit-token' : isCodexAppEnvironment() ? 'no-open-url' : 'not-codex-app',
+        }
   const submittedGroupCount =
     firstBrief && Array.isArray(firstBrief.groups)
       ? firstBrief.groups.length
@@ -1755,6 +1945,7 @@ async function workflowHandoff(workspace, args, agentId) {
       chunkStatus: initialChunkStatus,
       mustRunSlothD2cBeforeCoding: phase === 'initial_generation_requested' && initialChunkStatus.needsSlothD2c,
     },
+    codexTokenBridge,
     stopCondition:
       phase === 'design_prepare'
         ? 'Stop after opening the interceptor. Resume only when the user asks Codex to continue after submitting the first workflow.'
@@ -1765,7 +1956,7 @@ async function workflowHandoff(workspace, args, agentId) {
         ? 'Handle the returned eventBrief, edit code, run checks, then run complete-event.'
         : 'Open the interceptor URL in the Codex in-app browser, let the user annotate, then run wait-next-event.'),
     commands: {
-      openUrl: shouldStartDevInterceptor ? null : status.preferredInterceptorUrl || status.devInterceptorUrl || status.interceptorUrl,
+      openUrl,
       fallbackOpenUrl: status.interceptorUrl,
       startWorkflowDev: status.devMode
         ? commandString([
