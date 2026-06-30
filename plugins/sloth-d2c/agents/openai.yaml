@@ -1,7 +1,7 @@
 interface:
   display_name: "Sloth D2C"
   short_description: "Run Sloth D2C design-to-code workflows from Codex."
-  icon_small: "./assets/sloth-small.svg"
+  icon_small: "./assets/sloth.png"
   icon_large: "./assets/sloth.png"
   brand_color: "#F5821F"
   default_prompt: "Use Sloth D2C to open the interceptor, wait for workflow submission, generate chunks, and process implementation annotations."

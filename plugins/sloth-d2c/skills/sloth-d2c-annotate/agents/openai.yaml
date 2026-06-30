@@ -1,0 +1,6 @@
+interface:
+  display_name: "Sloth D2C Annotate"
+  short_description: "Inspect Sloth session annotations and append agent-facing annotation events."
+  icon_small: "./assets/sloth.png"
+  icon_large: "./assets/sloth.png"
+  brand_color: "#F5821F"

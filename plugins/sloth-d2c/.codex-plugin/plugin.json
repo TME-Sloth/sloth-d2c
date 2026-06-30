@@ -1,6 +1,6 @@
 {
   "name": "sloth-d2c",
-  "version": "0.1.11+codex.20260630",
+  "version": "0.1.12+codex.20260630",
   "description": "Codex skills for running the Sloth D2C design-to-code workflow through Sloth-side persistent sessions, snapshots, and incremental annotation events.",
   "author": {
     "name": "TME Sloth"
@@ -28,6 +28,9 @@
       "On first run, wait for workflow.submitted before generating code or writing implementationUrl.",
       "In loop mode, read generated-preview annotation events and process only the pending ones."
     ],
-    "brandColor": "#6B8CFF"
+    "brandColor": "#F5821F",
+    "composerIcon": "./assets/sloth.png",
+    "logo": "./assets/sloth.png",
+    "screenshots": []
   }
 }
