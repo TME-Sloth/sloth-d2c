@@ -17,20 +17,22 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs workflow-handoff \
   --agent-id codex
 ```
 
-当 workflow 要求打开拦截页时，在 Codex 内置浏览器中打开 `commands.openUrl`。保持该浏览器停留在 Sloth 页面；目标预览截图使用 headless/local 工具完成。
+当 workflow 要求打开拦截页时，在 Codex 内置浏览器中打开 `commands.openUrl`。保持该浏览器停留在 Sloth 页面；不要直接打开真实实现页或本地预览 URL 做检查。目标预览应通过 Sloth 拦截页中转展示，截图使用 Codex 自带截图能力截取拦截页/生成预览。
 
 如果 Browser 插件可用，先加载并使用其 `control-in-app-browser` skill。只有当 Codex 内置浏览器不可用或控制失败时，才使用会打开系统默认浏览器的 shell helper，例如 `open`、`xdg-open`、`start`、`osascript`、AppleScript 或直接调用 Chrome/Safari。
 
 ## 阶段
 
 - `design_prepare`：打开拦截页，然后停止并等待用户提交。
-- `initial_generation_requested`：处理 `workflow.submitted`，走首次转码流程：先运行/校验 Sloth D2C chunks，再消费 group chunks 与聚合/最终 prompts 写项目代码，设置 `implementationUrl`，最后完成事件。
+- `initial_generation_requested`：处理 `workflow.submitted`，走首次转码流程：先运行/校验 Sloth D2C chunks，再优先用 subagents 并行消费 group chunks，主 agent 汇总后结合聚合/最终 prompts 写项目代码，设置 `implementationUrl`，最后完成事件。
 - `initial_generating`：继续第一次生成，直到存在可访问的 `implementationUrl`。
 - `implementation_loop`：等待用户提交生成预览标注。
 - `implementation_annotations_requested`：只处理当前提交的标注并完成事件。
-- `design_diff_requested`：根据视觉 diff 上下文修复，并在适用时完成关联事件。
+- `design_diff_requested`：根据视觉 diff 上下文修复，并在适用时完成关联事件；视觉证据通过 Sloth 拦截页和 Codex 自带截图获取。
 
 对于第一次有分组的提交，不要把只包含 `codeAggregation.md` 和 `finalGenerate.md` 的 chunk 目录视为完整。实现开始前应存在 `0.md`、`1.md` 等 group chunk 文件。
+
+存在 group chunk 文件时，建议主 agent 优先派发 subagents 并行转码，避免独自串行读取所有 chunk 后直接写完整实现。一般最多同时 6 个 subagents；如果运行环境缺少 subagent 能力，或任务规模很小，可以由主 agent 直接处理，并在结果里说明采用的处理方式。
 
 ## 事件规则
 

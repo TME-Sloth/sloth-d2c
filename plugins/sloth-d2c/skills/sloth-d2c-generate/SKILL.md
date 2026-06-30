@@ -21,6 +21,8 @@ description: "用于运行 Sloth D2C CLI、生成或刷新 chunks；适用于用
 - 无分组的提交可以只有 `codeAggregation.md` 和 `finalGenerate.md`。
 - 如果提交事件中存在分组，但目录里只有 `codeAggregation.md` 和 `finalGenerate.md`，应视为 chunks 不完整；编码前必须结合提交事件上下文重新运行生成。
 
+有分组 chunk 时，后续转码建议优先交给 subagents 并行处理。生成 skill 的职责是产出并报告可派发的 group chunk 列表；主 workflow 可按每个 `0.md`、`1.md` 等文件派发 subagent。一般最多同时 6 个 subagents，超过时可分批。
+
 只有当用户明确要求 Figma 插件/本地缓存数据时才使用 `--local`。否则使用默认 REST 数据源。
 
 ## 直接 CLI
@@ -31,4 +33,4 @@ description: "用于运行 Sloth D2C CLI、生成或刷新 chunks；适用于用
 
 ## 收尾
 
-报告 `chunksDir`、group chunk 数量、`codeAggregation.md` 和 `finalGenerate.md` 是否存在、当前 workflow 阶段、待处理用户事件状态，以及建议的下一步。
+报告 `chunksDir`、group chunk 数量、可派发的 group chunk 文件列表、`codeAggregation.md` 和 `finalGenerate.md` 是否存在、当前 workflow 阶段、待处理用户事件状态，以及建议的下一步。

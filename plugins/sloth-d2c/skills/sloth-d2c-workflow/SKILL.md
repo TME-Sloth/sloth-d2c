@@ -30,16 +30,20 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs workflow-handoff \
 `workflow.submitted` 之后的第一次转码遵循旧版 `sloth d2c` skill 流程，唯一变化是浏览器界面改为 Codex 内置浏览器：
 
 1. 运行 Sloth D2C chunk 生成命令。
-2. 处理 group chunk prompts 和聚合 prompt。
+2. 优先使用 subagents 并行处理 group chunk prompts。
 3. 使用最终 prompt 写入可运行的项目文件。
 
 对于有分组的提交，有效 chunk 输出应包含一个或多个 group chunk 文件，例如 `0.md`、`1.md` 等，并且包含 `codeAggregation.md` 和 `finalGenerate.md`。当提交中存在分组时，只有 `codeAggregation.md` 和 `finalGenerate.md` 不够。首次实现代码开始前，必须先运行 chunk 生成并检查预期的 chunk 结构。
+
+有分组 chunk 时，建议把 chunk 转码工作拆给 subagents：每个 subagent 只处理一个或一小组独立的 group chunk，返回组件代码、依赖资源、样式要点和风险。这样更接近旧 skill 的并行 chunk 处理方式，也能减少主 agent 串行读取所有 chunks 后独自转码的风险。一般最多同时派发 6 个 subagents；group chunks 多于 6 个时可分批派发。若当前运行环境没有可用 subagent 能力，或任务规模很小，也可以由主 agent 直接处理，并在收尾说明采用了哪种路径。
 
 ## 浏览器界面
 
 当 workflow 要求打开或保持拦截页可见时，优先使用 Codex 内置浏览器。如果 Browser 插件可用，加载其 `control-in-app-browser` skill，并通过该浏览器界面打开 `commands.openUrl`。
 
 只有当 Codex 内置浏览器不可用或控制失败时，才使用会打开系统默认浏览器的 shell helper，例如 `open`、`xdg-open`、`start`、`osascript`、AppleScript 或直接调用 Chrome/Safari。`curl`/HTTP 探测可以确认可达性，但不等同于完成“打开拦截页”步骤。
+
+Codex 内置浏览器应保持在 Sloth 拦截页，不要直接导航到真实实现页或本地 Vite/预览 URL 做 smoke check。实现页检查应通过 Sloth 拦截页中转：写入 `implementationUrl` 后，让拦截页承载生成预览，再用 Codex 自带截图能力截取拦截页中的预览区域进行验证。
 
 ## 阶段处理
 
@@ -57,17 +61,18 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs workflow-handoff \
 2. 写实现代码前先运行 `commands.generateChunks`。这对应旧流程中 `sloth d2c --json` 的第一步，会生成/刷新 chunk prompts。
 3. 校验生成的 chunk 目录。有分组提交时，应看到 `0.md`、`1.md` 等 group chunk 文件，并且有 `codeAggregation.md` 和 `finalGenerate.md`。
 4. 编辑项目代码前先 claim 事件。
-5. 基于 Sloth chunks/prompts 和提交上下文生成或更新目标实现。先处理 group chunks，再处理聚合/最终生成，匹配旧版 chunk -> aggregation -> final write 流程。
-6. 启动或识别目标应用预览。
-7. 使用返回的命令模式写入 `implementationUrl`。
-8. 重新打开或保持 Sloth 拦截页在 Codex 内置浏览器中。
-9. 运行聚焦校验，然后完成事件。
+5. 适合并行时，为 group chunk 文件派发 subagents 转码。每个 subagent 的输入应包含对应 `{index}.md`、相关截图/资源路径、项目技术栈约束和输出格式要求。
+6. 主 agent 汇总 subagent 输出，再消费 `codeAggregation.md` 和 `finalGenerate.md` 生成或更新目标实现，匹配旧版 chunk -> aggregation -> final write 流程。
+7. 启动或识别目标应用预览，但不要把 Codex 内置浏览器直接打开到该真实预览 URL。
+8. 使用返回的命令模式写入 `implementationUrl`。
+9. 重新打开或保持 Sloth 拦截页在 Codex 内置浏览器中，通过拦截页查看生成预览。
+10. 运行聚焦校验；视觉校验使用 Codex 自带截图能力截取 Sloth 拦截页/生成预览，不要自写截图脚本，然后完成事件。
 
 必需的 chunks/prompts 缺失时，不要仅凭截图手写第一次实现。
 
 ### `initial_generating`
 
-继续第一次生成路径，直到存在可访问的 `implementationUrl`。保持 Codex 内置浏览器停留在 Sloth 拦截页，而不是目标预览页。
+继续第一次生成路径，直到存在可访问的 `implementationUrl`。保持 Codex 内置浏览器停留在 Sloth 拦截页，而不是目标预览页；需要看生成效果时，通过拦截页中的生成预览查看和截图。
 
 ### `implementation_loop`
 
@@ -93,4 +98,4 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs workflow-handoff \
 
 ## 收尾
 
-报告当前阶段、拦截页是否已打开、已处理事件 id、`implementationUrl` 状态、变更文件和已运行校验。在 `design_prepare` 阶段，只需报告页面已打开并等待用户提交。
+报告当前阶段、拦截页是否已打开、已处理事件 id、chunk 处理方式（subagent 并行或主 agent 直接处理）、`implementationUrl` 状态、变更文件和已运行校验。在 `design_prepare` 阶段，只需报告页面已打开并等待用户提交。
