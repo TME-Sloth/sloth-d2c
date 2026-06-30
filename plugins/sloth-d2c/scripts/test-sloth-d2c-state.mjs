@@ -452,6 +452,43 @@ async function main() {
     assert.match(defaultHandoff.commands.openUrl, /localhost:3100\/auth-page/)
     assert.equal(defaultHandoff.commands.startWorkflowDev, null)
     assert.deepEqual(defaultHandoff.warnings, [])
+    const defaultToken = new URL(defaultHandoff.commands.openUrl).searchParams.get('token')
+    assert.match(defaultToken, /^sloth-d2c-[0-9a-f-]{36}$/)
+
+    const repeatedHandoff = await runCli([
+      'workflow-handoff',
+      '--workspace',
+      designPrepare.workspace,
+      '--file-key',
+      designPrepare.fileKey,
+      '--node-id',
+      designPrepare.nodeId,
+      '--agent-id',
+      'codex',
+    ])
+    assert.notEqual(new URL(repeatedHandoff.commands.openUrl).searchParams.get('token'), defaultToken)
+    await assert.rejects(
+      fs.stat(path.join(sessionDir(designPrepare.workspace, designPrepare.fileKey, designPrepare.nodeId), 'workflow-token.json')),
+      /ENOENT/,
+    )
+
+    const otherDesignPrepare = await createDesignPrepareWorkspace()
+    try {
+      const otherHandoff = await runCli([
+        'workflow-handoff',
+        '--workspace',
+        otherDesignPrepare.workspace,
+        '--file-key',
+        otherDesignPrepare.fileKey,
+        '--node-id',
+        otherDesignPrepare.nodeId,
+        '--agent-id',
+        'codex',
+      ])
+      assert.notEqual(new URL(otherHandoff.commands.openUrl).searchParams.get('token'), defaultToken)
+    } finally {
+      await fs.rm(otherDesignPrepare.workspace, { recursive: true, force: true })
+    }
 
     const tokenBridgeServers = await createTokenBridgeServers()
     try {
@@ -479,7 +516,7 @@ async function main() {
       )
       assert.equal(codexHandoff.codexTokenBridge.enabled, true)
       assert.equal(codexHandoff.codexTokenBridge.status, 'started')
-      assert.equal(codexHandoff.codexTokenBridge.token, `sloth-d2c-${sessionId(designPrepare.fileKey, designPrepare.nodeId)}`)
+      assert.equal(codexHandoff.codexTokenBridge.token, new URL(codexHandoff.commands.openUrl).searchParams.get('token'))
       await waitFor(() => tokenBridgeServers.registrations.length > 0)
       assert.equal(tokenBridgeServers.registrations.length, 1)
       assert.equal(tokenBridgeServers.registrations[0].token, codexHandoff.codexTokenBridge.token)

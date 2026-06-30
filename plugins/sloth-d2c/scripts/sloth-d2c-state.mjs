@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { createRequire } from 'node:module'
@@ -63,6 +64,11 @@ function sessionId(fileKey, nodeId) {
 
 function sessionDir(workspace, fileKey, nodeId) {
   return path.join(d2cDir(workspace, fileKey, nodeId), 'session')
+}
+
+function createWorkflowToken(args = {}) {
+  if (args.token && args.token !== true) return String(args.token)
+  return `sloth-d2c-${randomUUID()}`
 }
 
 function isCodexAppEnvironment(env = process.env) {
@@ -648,7 +654,7 @@ function interceptorDataSource(args = {}) {
 
 function buildInterceptorUrl({ host = 'localhost', port = '3100', fileKey, nodeId, token, mode = 'create', supportSampling = '1', supportRoots = '1', dataSource = 'restful' }) {
   const url = new URL(`http://${host}:${port}/auth-page`)
-  url.searchParams.set('token', token || `sloth-d2c-${sessionId(fileKey, nodeId)}`)
+  url.searchParams.set('token', token)
   url.searchParams.set('fileKey', fileKey)
   if (nodeId) url.searchParams.set('nodeId', nodeId)
   url.searchParams.set('mode', mode)
@@ -837,12 +843,13 @@ async function workflowStatus(workspace, args, agentId) {
   const actionablePendingEvents = pending.events.filter(isActionableWorkflowEvent)
   const workflowPhase = deriveWorkflowPhase(state, events, actionablePendingEvents)
   const chunks = await listChunks(workspace, fileKey, nodeId)
+  const workflowToken = createWorkflowToken(args)
   const interceptorUrl = buildInterceptorUrl({
     host: String(args.host || 'localhost'),
     port: String(args.port || '3100'),
     fileKey,
     nodeId,
-    token: args.token && args.token !== true ? String(args.token) : undefined,
+    token: workflowToken,
     mode: String(args.mode || 'create'),
     supportSampling: String(args['support-sampling'] || '1'),
     supportRoots: String(args['support-roots'] || '1'),
@@ -864,7 +871,7 @@ async function workflowStatus(workspace, args, agentId) {
           ...candidate,
           fileKey,
           nodeId,
-          token: args.token && args.token !== true ? String(args.token) : undefined,
+          token: workflowToken,
           mode: String(args.mode || 'create'),
           supportSampling: String(args['support-sampling'] || '1'),
           supportRoots: String(args['support-roots'] || '1'),
@@ -2254,13 +2261,14 @@ async function main() {
 
   if (command === 'interceptor-url') {
     const selected = await resolveSession(workspace, args)
+    const workflowToken = createWorkflowToken(args)
     process.stdout.write(
       `${buildInterceptorUrl({
         host: String(args.host || 'localhost'),
         port: String(args.port || '3100'),
         fileKey: selected.fileKey,
         nodeId: selected.nodeId,
-        token: args.token && args.token !== true ? String(args.token) : undefined,
+        token: workflowToken,
         mode: String(args.mode || 'create'),
         supportSampling: String(args['support-sampling'] || '1'),
         supportRoots: String(args['support-roots'] || '1'),
