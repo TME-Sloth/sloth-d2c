@@ -1,6 +1,6 @@
 {
   "name": "sloth-d2c",
-  "version": "0.1.10+codex.20260629212500",
+  "version": "0.1.11+codex.20260630",
   "description": "Codex skills for running the Sloth D2C design-to-code workflow through Sloth-side persistent sessions, snapshots, and incremental annotation events.",
   "author": {
     "name": "TME Sloth"

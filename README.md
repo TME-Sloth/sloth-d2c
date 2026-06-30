@@ -5,6 +5,8 @@ Codex marketplace package for the Sloth D2C design-to-code workflow.
 This repository intentionally contains only the Codex plugin distribution files:
 
 - `.agents/plugins/marketplace.json`
+- `agents/openai.yaml`
+- `assets/`
 - `plugins/sloth-d2c/.codex-plugin/plugin.json`
 - `plugins/sloth-d2c/skills/`
 - `plugins/sloth-d2c/scripts/`

@@ -1,6 +1,6 @@
 {
   "name": "sloth-d2c",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "private": true,
   "description": "Codex marketplace package for Sloth D2C.",
   "scripts": {
