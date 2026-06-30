@@ -1734,8 +1734,8 @@ async function workflowHandoff(workspace, args, agentId) {
   ])
   const recommendedActionByPhase = {
     design_prepare: shouldStartDevInterceptor
-      ? 'Start the Sloth workflow dev launcher, rerun workflow-handoff, then open the returned interceptor URL in the Codex in-app browser and end this Codex turn.'
-      : 'Open the interceptor in the Codex in-app browser, confirm it is visible, then end this Codex turn. Do not run wait-next-event, D2C, or implementationUrl detection in this phase. The user will return after submitting the first workflow.',
+      ? 'Start the Sloth workflow dev launcher, rerun workflow-handoff, then open the returned interceptor URL in the Codex in-app browser and end this Codex turn. Use shell open/system default browser/Chrome only if the Codex in-app browser is unavailable or control fails.'
+      : 'Open the interceptor in the Codex in-app browser, confirm it is visible, then end this Codex turn. Use shell open/system default browser/Chrome only if the Codex in-app browser is unavailable or control fails. Do not run wait-next-event, D2C, or implementationUrl detection in this phase. The user will return after submitting the first workflow.',
     initial_generation_requested: initialChunkStatus.needsSlothD2c
       ? 'Before writing implementation code, run the sloth d2c atomic command to generate submitted group chunks/prompts. Do not hand-write the initial implementation from screenshots while chunks are missing. After chunks/codeAggregation/finalGenerate exist, claim the workflow.submitted event, consume the chunks, start the target app preview, write implementationUrl, keep or reopen the Sloth interceptor in the Codex in-app browser, then complete the event.'
       : 'Claim the workflow.submitted event, consume the existing Sloth D2C chunks/prompts to generate the initial code, start the target app preview, write implementationUrl, keep or reopen the Sloth interceptor in the Codex in-app browser, then complete the workflow.submitted event. Do not navigate the in-app browser directly to the target preview URL.',
@@ -1886,10 +1886,10 @@ async function workflowGuide(workspace, args, agentId) {
         step: 'open-interceptor',
         status: 'ready',
         action: needsDevInterceptor
-          ? 'Start the Sloth workflow dev launcher, rerun workflow-handoff, then open the returned interceptor URL in the Codex in-app browser.'
+          ? 'Start the Sloth workflow dev launcher, rerun workflow-handoff, then open the returned interceptor URL in the Codex in-app browser. Use shell open/system default browser/Chrome only if the Codex in-app browser is unavailable or control fails.'
           : isInitialGeneration
           ? 'Keep the existing Sloth interceptor open while Codex performs the first generation.'
-          : 'Open the existing Sloth interceptor in the Codex in-app browser.',
+          : 'Open the existing Sloth interceptor in the Codex in-app browser. Use shell open/system default browser/Chrome only if the Codex in-app browser is unavailable or control fails.',
         url: handoff.commands.openUrl,
         command: needsDevInterceptor ? handoff.commands.startWorkflowDev : null,
         doneWhen: needsDevInterceptor

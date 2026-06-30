@@ -19,6 +19,8 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs workflow-handoff \
 
 Open `commands.openUrl` in the Codex in-app browser when the workflow asks for the interceptor. Keep that browser on the Sloth page; use headless/local tools for target preview screenshots.
 
+If the Browser plugin is available, load its `control-in-app-browser` skill and use that surface first. Use shell helpers that open the system default browser, including `open`, `xdg-open`, `start`, `osascript`, AppleScript, or direct Chrome/Safari commands, only after the Codex in-app browser is unavailable or control fails.
+
 ## Phases
 
 - `design_prepare`: open the interceptor, then stop and wait for user submission.

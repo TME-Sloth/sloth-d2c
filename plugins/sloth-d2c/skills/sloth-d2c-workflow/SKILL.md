@@ -25,6 +25,12 @@ Read `workflowPhase`, `recommendedAction`, `stopCondition`, `commands`, `nextEve
 
 Use `--local` only when the user explicitly asks for Figma plugin/local cached data. Use `--dev` or `--dev-port` only for repository development.
 
+## Browser Surface
+
+When the workflow says to open or keep the interceptor visible, try the Codex in-app browser first. If the Browser plugin is available, load its `control-in-app-browser` skill and open `commands.openUrl` through that browser surface.
+
+Use shell helpers that open the system default browser, including `open`, `xdg-open`, `start`, `osascript`, AppleScript, or direct Chrome/Safari commands, only after the Codex in-app browser is unavailable or control fails. A `curl`/HTTP probe can confirm reachability, but it does not satisfy the "open the interceptor" step.
+
 ## Phase Handling
 
 ### `design_prepare`
