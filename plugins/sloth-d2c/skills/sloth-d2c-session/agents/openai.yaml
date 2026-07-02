@@ -1,6 +1,0 @@
-interface:
-  display_name: "Sloth D2C Session"
-  short_description: "检查并推进 Sloth D2C 持久化会话状态。"
-  icon_small: "./assets/sloth.png"
-  icon_large: "./assets/sloth.png"
-  brand_color: "#F5821F"

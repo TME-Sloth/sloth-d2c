@@ -5,7 +5,7 @@ description: "用于运行 Sloth D2C CLI、生成或刷新 chunks；适用于用
 
 # Sloth D2C 生成
 
-用于创建或刷新 Sloth D2C chunks/prompts。完整工作流中，先打开拦截页并等待 `workflow.submitted`；对“转换这个 Figma 设计”“使用本地缓存”等普通请求，不要绕过用户提交。只有当用户明确要求独立/静默/无 UI 运行、跳过拦截页，或仅刷新 chunks/设计数据时，才绕过拦截页。
+用于创建或刷新 Sloth D2C chunks/prompts。完整工作流中，先通过 `commands.prepareFirstRun` 运行 Codex handoff 模式的 `sloth d2c` 准备设计数据，再打开返回的拦截页并等待用户点击生成；首次提交通过 submit payload、`groupsData.json` 和 `chunks/` 驱动，不属于 loop，也不依赖 `workflow.submitted` 事件。只有当用户明确要求独立/静默/无 UI 运行、跳过拦截页，或仅刷新 chunks/设计数据时，才绕过拦截页。
 
 ## 输入
 
@@ -13,13 +13,13 @@ description: "用于运行 Sloth D2C CLI、生成或刷新 chunks；适用于用
 
 ## 首选路径
 
-在 workflow 模式下，收到 `workflow.submitted` 后，第一步运行 `workflow-handoff.commands.generateChunks` 返回的生成命令。这等价于旧流程里的 `sloth d2c --file-key ... --node-id ... --json`：先准备 Codex 写代码前必须消费的 chunk prompts。
+在 workflow 模式下，`design_prepare` 先运行 `commands.prepareFirstRun`，确保 REST/local 设计数据已经写入目标项目 `.sloth`。用户点击生成后，第一步运行/校验 chunk 生成命令。这等价于旧流程里的静默 `sloth d2c --file-key ... --node-id ... --silent --json`：准备 Codex 写代码前必须消费的 chunk prompts。
 
 命令完成后，校验 chunk 目录：
 
 - 有分组的提交应包含 `0.md`、`1.md` 等 group chunk 文件，以及 `codeAggregation.md` 和 `finalGenerate.md`。
 - 无分组的提交可以只有 `codeAggregation.md` 和 `finalGenerate.md`。
-- 如果提交事件中存在分组，但目录里只有 `codeAggregation.md` 和 `finalGenerate.md`，应视为 chunks 不完整；编码前必须结合提交事件上下文重新运行生成。
+- 如果首次提交中存在分组，但目录里只有 `codeAggregation.md` 和 `finalGenerate.md`，应视为 chunks 不完整；编码前必须结合提交 payload 或 `groupsData.json` 重新运行生成。
 
 有分组 chunk 时，后续转码建议优先交给 subagents 并行处理。生成 skill 的职责是产出并报告可派发的 group chunk 列表；主 workflow 可按每个 `0.md`、`1.md` 等文件派发 subagent。一般最多同时 6 个 subagents，超过时可分批。
 

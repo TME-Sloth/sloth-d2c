@@ -1,6 +1,0 @@
-interface:
-  display_name: "Sloth D2C Annotate"
-  short_description: "检查 Sloth 会话标注，并记录面向 agent 的标注事件。"
-  icon_small: "./assets/sloth.png"
-  icon_large: "./assets/sloth.png"
-  brand_color: "#F5821F"

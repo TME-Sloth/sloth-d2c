@@ -1,0 +1,7 @@
+interface:
+  display_name: "Sloth D2C Loop"
+  short_description: "继续处理 Sloth D2C 生成稿标注闭环。"
+  icon_small: "./assets/sloth.png"
+  icon_large: "./assets/sloth.png"
+  brand_color: "#F5821F"
+  default_prompt: "Use $sloth-d2c-loop to continue the saved generated-preview annotation event and write back the result."

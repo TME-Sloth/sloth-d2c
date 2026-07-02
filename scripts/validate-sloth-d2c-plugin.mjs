@@ -9,8 +9,7 @@ const requiredFiles = [
   'scripts/start-workflow-dev.mjs',
   'scripts/test-sloth-d2c-state.mjs',
   'skills/sloth-d2c-workflow/SKILL.md',
-  'skills/sloth-d2c-session/SKILL.md',
-  'skills/sloth-d2c-annotate/SKILL.md',
+  'skills/sloth-d2c-loop/SKILL.md',
   'skills/sloth-d2c-design-diff/SKILL.md',
   'skills/sloth-d2c-generate/SKILL.md',
 ]

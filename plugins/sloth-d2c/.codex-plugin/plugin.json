@@ -18,6 +18,7 @@
       "Versioned annotation snapshots",
       "Incremental event handling",
       "Generated-preview annotation workflow",
+      "Generated-preview loop skill",
       "Design diff restoration loop",
       "Focused annotation/event briefs",
       "Codex browser screenshot handoff",
@@ -26,7 +27,8 @@
     "defaultPrompt": [
       "Open the Sloth D2C interceptor for this Figma design so I can review grouping/config before code generation.",
       "Use my local Sloth/Figma cache to open the Sloth D2C interceptor and prepare the conversion workflow.",
-      "Continue the Sloth D2C workflow after I submit grouping/config, then generate or update the implementation."
+      "Continue the Sloth D2C workflow after I submit grouping/config, then generate or update the implementation.",
+      "Use $sloth-d2c-loop to continue one saved generated-preview annotation event."
     ],
     "brandColor": "#F5821F",
     "composerIcon": "./assets/sloth.png",
