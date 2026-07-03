@@ -1853,8 +1853,8 @@ async function workflowHandoff(workspace, args, agentId) {
   ])
   const recommendedActionByPhase = {
     design_prepare: shouldStartDevInterceptor
-      ? 'Start the Sloth workflow dev launcher, rerun workflow-handoff, then run commands.prepareFirstRun. Open the returned codexHandoff.interceptorUrl in the Codex in-app browser and end this Codex turn. Use shell open/system default browser/Chrome only if the Codex in-app browser is unavailable or control fails.'
-      : 'Run commands.prepareFirstRun first. It runs sloth d2c in Codex handoff mode to prepare REST/local design data without opening Chrome or blocking for submit. Then open the returned codexHandoff.interceptorUrl in the Codex in-app browser, confirm it is visible, and end this Codex turn.',
+      ? 'Start the Sloth workflow dev launcher, rerun workflow-handoff, then run commands.prepareFirstRun. Open the returned codexHandoff.interceptorUrl in the Codex in-app browser and end this Codex turn. Do not click Submit/Generate or trigger the form for the user. Use shell open/system default browser/Chrome only if the Codex in-app browser is unavailable or control fails.'
+      : 'Run commands.prepareFirstRun first. It runs sloth d2c in Codex handoff mode to prepare REST/local design data without opening Chrome or blocking for submit. Then open the returned codexHandoff.interceptorUrl in the Codex in-app browser, confirm it is visible, and end this Codex turn. Do not inspect controls and submit on the user’s behalf.',
     initial_generation_requested: initialChunkStatus.needsSlothD2c
       ? 'Before writing implementation code, run the sloth d2c atomic command to generate submitted group chunks/prompts. Do not hand-write the initial implementation from screenshots while chunks are missing. After chunks/codeAggregation/finalGenerate exist, claim the workflow.submitted event, consume the chunks, start the target app preview, write implementationUrl, keep or reopen the Sloth interceptor in the Codex in-app browser, then complete the event.'
       : 'Claim the workflow.submitted event, consume the existing Sloth D2C chunks/prompts to generate the initial code, start the target app preview, write implementationUrl, keep or reopen the Sloth interceptor in the Codex in-app browser, then complete the workflow.submitted event. Do not navigate the in-app browser directly to the target preview URL.',
@@ -1877,7 +1877,7 @@ async function workflowHandoff(workspace, args, agentId) {
     codexTokenBridge,
     stopCondition:
       phase === 'design_prepare'
-        ? 'Stop after commands.prepareFirstRun returns a codexHandoff.interceptorUrl and that URL is opened in the Codex in-app browser. Resume only when the user asks Codex to continue after submitting the first workflow.'
+        ? 'Stop after commands.prepareFirstRun returns a codexHandoff.interceptorUrl and that URL is opened in the Codex in-app browser. Do not click Submit/Generate, do not use DOM selectors or coordinates to submit, and do not start chunks/code generation. Resume only when the user asks Codex to continue after submitting the first workflow.'
         : undefined,
     recommendedAction:
       recommendedActionByPhase[phase] ||
@@ -2007,10 +2007,10 @@ async function workflowGuide(workspace, args, agentId) {
         step: isFirstRunWaiting ? 'prepare-first-run' : 'open-interceptor',
         status: 'ready',
         action: needsDevInterceptor
-          ? 'Start the Sloth workflow dev launcher, rerun workflow-handoff, then run commands.prepareFirstRun. Open the returned codexHandoff.interceptorUrl in the Codex in-app browser. Use shell open/system default browser/Chrome only if the Codex in-app browser is unavailable or control fails.'
+          ? 'Start the Sloth workflow dev launcher, rerun workflow-handoff, then run commands.prepareFirstRun. Open the returned codexHandoff.interceptorUrl in the Codex in-app browser, then stop for the user. Do not click Submit/Generate or trigger the form. Use shell open/system default browser/Chrome only if the Codex in-app browser is unavailable or control fails.'
           : isInitialGeneration
           ? 'Keep the existing Sloth interceptor open while Codex performs the first generation.'
-          : 'Run commands.prepareFirstRun to prepare design data, then open the returned codexHandoff.interceptorUrl in the Codex in-app browser. Use shell open/system default browser/Chrome only if the Codex in-app browser is unavailable or control fails.',
+          : 'Run commands.prepareFirstRun to prepare design data, then open the returned codexHandoff.interceptorUrl in the Codex in-app browser, then stop for the user. Do not click Submit/Generate or trigger the form. Use shell open/system default browser/Chrome only if the Codex in-app browser is unavailable or control fails.',
         url: handoff.commands.openUrl,
         command: isFirstRunWaiting ? (needsDevInterceptor ? handoff.commands.startWorkflowDev : handoff.commands.prepareFirstRun) : null,
         doneWhen: needsDevInterceptor

@@ -5,7 +5,7 @@ description: "用于运行 Sloth D2C CLI、生成或刷新 chunks；适用于用
 
 # Sloth D2C 生成
 
-用于创建或刷新 Sloth D2C chunks/prompts。完整工作流中，先通过 `commands.prepareFirstRun` 运行 Codex handoff 模式的 `sloth d2c` 准备设计数据，再打开返回的拦截页并等待用户点击生成；首次提交通过 submit payload、`groupsData.json` 和 `chunks/` 驱动，不属于 loop，也不依赖 `workflow.submitted` 事件。只有当用户明确要求独立/静默/无 UI 运行、跳过拦截页，或仅刷新 chunks/设计数据时，才绕过拦截页。
+用于创建或刷新 Sloth D2C chunks/prompts。完整工作流中，先通过 `commands.prepareFirstRun` 运行 Codex handoff 模式的 `sloth d2c` 准备设计数据，再打开返回的拦截页并等待用户点击生成；首次提交通过 submit payload、`groupsData.json` 和 `chunks/` 驱动，不属于 loop，也不依赖 `workflow.submitted` 事件。首次提交是人工门禁：不要代替用户点击拦截页里的提交/生成按钮，也不要用 DOM selector、坐标点击或脚本触发表单提交。只有当用户明确要求独立/静默/无 UI 运行、跳过拦截页，或仅刷新 chunks/设计数据时，才绕过拦截页。
 
 ## 输入
 
@@ -13,7 +13,7 @@ description: "用于运行 Sloth D2C CLI、生成或刷新 chunks；适用于用
 
 ## 首选路径
 
-在 workflow 模式下，`design_prepare` 先运行 `commands.prepareFirstRun`，确保 REST/local 设计数据已经写入目标项目 `.sloth`。用户点击生成后，第一步运行/校验 chunk 生成命令。这等价于旧流程里的静默 `sloth d2c --file-key ... --node-id ... --silent --json`：准备 Codex 写代码前必须消费的 chunk prompts。
+在 workflow 模式下，`design_prepare` 先运行 `commands.prepareFirstRun`，确保 REST/local 设计数据已经写入目标项目 `.sloth`，然后停在拦截页等待用户提交。用户点击生成后，第一步运行/校验 chunk 生成命令。这等价于旧流程里的静默 `sloth d2c --file-key ... --node-id ... --silent --json`：准备 Codex 写代码前必须消费的 chunk prompts。
 
 命令完成后，校验 chunk 目录：
 
