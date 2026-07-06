@@ -9,9 +9,39 @@ description: "用于通过 Sloth 拦截页、持久化 loop、快照和增量标
 
 进入 loop 后，用户的继续处理 prompt 应尽量短，只传 `fileKey`、`nodeId`、`eventId`、`count`、`implementationUrl` 等定位字段。标注详情、当前阶段、已处理进度和 ack 状态都从目标项目本地 `.sloth/.../loop/state.json`、`events.jsonl`、`snapshots/` 读取；如果当前 cwd 没有对应状态，应先定位真实生成 workspace，再处理事件。
 
-默认用户请求，例如“转换这个 Figma 设计”“使用 Sloth D2C”或“使用本地缓存”，仍从拦截页开始。`--local` 只作为拦截页和 D2C 命令的数据源选择。除非用户明确要求独立/静默/无 UI 运行、跳过拦截页，或仅刷新 chunks，否则不要绕过拦截页。
+默认用户请求，例如“转换这个 Figma 设计”“使用 Sloth D2C”或“使用本地缓存”，仍从拦截页开始。`--local` 只作为拦截页和 D2C 命令的数据源选择。除非用户明确要求独立/静默/无 UI 运行、跳过拦截页，否则不要绕过拦截页。
+
+## 无拦截页模式
+
+当用户**明确**要求静默、无 UI、跳过拦截页、直接生成 chunks/代码时，workflow-handoff 应带 `--silent`：
+
+```bash
+node <plugin-root>/scripts/sloth-d2c-state.mjs workflow-handoff \
+  --workspace <project-root> \
+  --file-key <fileKey> \
+  --node-id <nodeId> \
+  --agent-id codex \
+  --silent
+```
+
+此时返回 `interceptorMode: "silent"`。首次生成走静默路径，**不要**打开拦截页，也**不要**等待 `workflow.submitted` 人工提交：
+
+1. 运行 `commands.firstRun`（即 `commands.rawSlothD2c`）或 `commands.generateChunks`，直接拉取设计数据并生成 chunks/prompts。
+2. 校验 `chunksDir` 后，在同一回合继续按 group chunks → `codeAggregation.md` → `finalGenerate.md` 生成初版实现。
+3. 首次生成阶段不要打开、保持或重新打开 Sloth 拦截页；真实预览验证仍直接访问 `implementationUrl` 或一次性自动化浏览器。
+4. 只有用户后续还要进入标注 loop，或 workflow 已进入 `implementation_loop` 及之后阶段，才再打开拦截页。
+
+静默模式与交互模式的差异：
+
+| 场景 | 交互模式（默认） | 无拦截页模式（`--silent`） |
+| --- | --- | --- |
+| 首次准备 | `commands.prepareFirstRun` + 打开拦截页 + 等用户提交 | `commands.firstRun` / `commands.rawSlothD2c`，不打开拦截页 |
+| 首次生成 | 基于拦截页提交后的 chunks 生成，并保持拦截页可见 | 直接消费 chunks 生成，首次生成不打开拦截页 |
+| 后续 loop | 打开拦截页接收标注 | 仅在 loop 阶段按需打开拦截页 |
 
 ## 开始
+
+直接运行 `workflow-handoff`，不要每次都主动执行 `sloth --version` 或 `sloth server start`。若返回 `slothCli.available === false`，按 `recommendedAction` 和 `commands.installSlothPnpm` / `commands.installSlothNpm` 安装 CLI，运行 `commands.verifySloth` 后重新 handoff；CLI 已可用时直接进入后续阶段。
 
 从当前 skill 目录解析 `<plugin-root>`，然后请求当前 handoff：
 
@@ -23,13 +53,13 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs workflow-handoff \
   --agent-id codex
 ```
 
-读取 `workflowPhase`、`recommendedAction`、`stopCondition`、`commands`、`nextEvent` 和 `eventBrief`。优先使用返回的 `commands.*`，不要手动重建脚本命令。
+读取 `workflowPhase`、`interceptorMode`、`recommendedAction`、`stopCondition`、`commands`、`nextEvent` 和 `eventBrief`。优先使用返回的 `commands.*`，不要手动重建脚本命令。
 
-只有当用户明确要求 Figma 插件/本地缓存数据时才使用 `--local`。`--dev` 或 `--dev-port` 仅用于仓库开发。
+只有当用户明确要求 Figma 插件/本地缓存数据时才使用 `--local`。用户明确要求静默/无 UI/跳过拦截页时，workflow-handoff 必须带 `--silent`。`--dev` 或 `--dev-port` 仅用于仓库开发。
 
 ## 首次转码约定
 
-第一次转码遵循 `sloth d2c` skill 流程，但在 Codex 环境里拆成非阻塞 handoff，不依赖也不创建 loop 事件：
+交互模式（默认）下，第一次转码遵循 `sloth d2c` skill 流程，但在 Codex 环境里拆成非阻塞 handoff，不依赖也不创建 loop 事件：
 
 1. 运行 `commands.prepareFirstRun`，让 `sloth d2c` 拉取 REST 数据或读取本地缓存，并写入目标项目 `.sloth/<fileKey>/<nodeId>/` 的基础设计数据。
 2. 打开命令返回的 `codexHandoff.interceptorUrl`，不是预先返回的 `commands.openUrl`。
@@ -37,6 +67,8 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs workflow-handoff \
 4. 用户在拦截页提交后，再运行/校验 Sloth D2C chunk 生成命令。
 5. 优先使用 subagents 并行处理 group chunk prompts。
 6. 使用最终 prompt 写入可运行的项目文件。
+
+无拦截页模式（`interceptorMode: "silent"`）下，跳过上述 2–4 步：直接运行 `commands.firstRun` 生成 chunks，并在同一回合继续 5–6 步；首次生成阶段不要打开拦截页。
 
 对于有分组的提交，有效 chunk 输出应包含一个或多个 group chunk 文件，例如 `0.md`、`1.md` 等，并且包含 `codeAggregation.md` 和 `finalGenerate.md`。当提交中存在分组时，只有 `codeAggregation.md` 和 `finalGenerate.md` 不够。首次实现代码开始前，必须先运行 chunk 生成并检查预期的 chunk 结构。
 
@@ -48,7 +80,9 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs workflow-handoff \
 
 ## 浏览器与真实预览验证
 
-当 workflow 要求打开或保持拦截页可见时，优先使用 Codex 内置浏览器。如果 Browser 插件可用，加载其 `control-in-app-browser` skill。`design_prepare` 阶段应先运行 `commands.prepareFirstRun`，再打开命令返回的 `codexHandoff.interceptorUrl`。Codex 内置浏览器只有一个当前页面，把它视为 Sloth 拦截页专用页面。
+当 workflow 要求打开或保持拦截页可见时（`interceptorMode !== "silent"` 且处于交互首次流程或 loop 阶段），优先使用 Codex 内置浏览器。如果 Browser 插件可用，加载其 `control-in-app-browser` skill。交互模式下 `design_prepare` 阶段应先运行 `commands.prepareFirstRun`，再打开命令返回的 `codexHandoff.interceptorUrl`。Codex 内置浏览器只有一个当前页面，把它视为 Sloth 拦截页专用页面。
+
+无拦截页模式的首次生成不需要打开拦截页；以下浏览器约束主要适用于交互模式，或 loop 阶段按需打开拦截页时。
 
 只有当 Codex 内置浏览器不可用或控制失败时，才使用会打开系统默认浏览器的 shell helper，例如 `open`、`xdg-open`、`start`、`osascript`、AppleScript 或直接调用 Chrome/Safari。`curl`/HTTP 探测可以确认可达性，但不等同于完成“打开拦截页”步骤。
 
@@ -65,9 +99,11 @@ Codex 内置浏览器应保持在 Sloth 拦截页，避免把用户的 Sloth 拦
 
 ### `design_prepare`
 
-先运行 `commands.prepareFirstRun`。它会运行 `sloth d2c --json`，在 Codex 环境下由服务端自动进入 handoff，准备 REST/local 设计数据，同步项目 `.sloth` 基础文件，并返回 `codexHandoff.interceptorUrl`。在 Codex 内置浏览器中打开这个返回 URL。确认 Sloth D2C 页面和设计预览可见，然后结束当前回合，等待用户提交首次 workflow 后继续。
+交互模式：先运行 `commands.prepareFirstRun`。它会运行 `sloth d2c --json`，在 Codex 环境下由服务端自动进入 handoff，准备 REST/local 设计数据，同步项目 `.sloth` 基础文件，并返回 `codexHandoff.interceptorUrl`。在 Codex 内置浏览器中打开这个返回 URL。确认 Sloth D2C 页面和设计预览可见，然后结束当前回合，等待用户提交首次 workflow 后继续。
 
 此阶段不要生成 chunks、不要生成代码、不要启动目标应用、不要写入 `implementationUrl`、不要 ack 事件，也不要运行长轮询。不要读取页面控件状态后代替用户点击“提交/生成”；即使页面已有默认配置、按钮可用，也必须停住。必须使用 `commands.prepareFirstRun` 返回的 handoff URL，不要手动打开预先拼出来的拦截页 URL。
+
+无拦截页模式：运行 `commands.firstRun` 生成 chunks/prompts，校验 chunk 结构后在同一回合继续首次实现生成；不要打开拦截页，也不要等待用户提交。
 
 ### `initial_generation_requested` / `initial_generating`
 
@@ -80,8 +116,8 @@ Codex 内置浏览器应保持在 Sloth 拦截页，避免把用户的 Sloth 拦
 5. 主 agent 汇总 subagent 输出，再逐条消费 `codeAggregation.md` 和 `finalGenerate.md` 生成或更新目标实现，匹配旧版 group chunk -> aggregation -> final prompt -> final write 流程。
 6. 启动或识别目标应用预览。技术 smoke check 应直接访问真实预览 URL，但使用一次性 Playwright/Puppeteer/headless 浏览器、HTTP smoke check 或项目测试脚本，不要覆盖 Codex 内置浏览器里的 Sloth 拦截页。
 7. 写入 `implementationUrl`。这一步才开始 loop 状态，用于后续生成稿标注、diff 和修复事件。
-8. 重新打开或保持 Sloth 拦截页在 Codex 内置浏览器中，通过拦截页查看生成预览和接收用户标注。
-9. 运行聚焦校验；真实实现的可访问性/交互/状态变化应在 `implementationUrl` 上验证，Sloth 拦截页只用于验证工作流容器和标注入口。
+8. 交互模式下，重新打开或保持 Sloth 拦截页在 Codex 内置浏览器中，通过拦截页查看生成预览和接收用户标注。无拦截页模式的首次生成跳过此步。
+9. 运行聚焦校验；真实实现的可访问性/交互/状态变化应在 `implementationUrl` 上验证。交互模式或 loop 阶段才用 Sloth 拦截页验证工作流容器和标注入口。
 
 必需的 chunks/prompts 缺失时，不要仅凭截图手写第一次实现。
 
@@ -110,4 +146,4 @@ Codex 内置浏览器应保持在 Sloth 拦截页，避免把用户的 Sloth 拦
 
 ## 收尾
 
-报告当前阶段、拦截页是否已打开、已处理事件 id、chunk 处理方式（subagent 并行或主 agent 直接处理）、`implementationUrl` 状态、变更文件和已运行校验。在 `design_prepare` 阶段，只需报告页面已打开并等待用户提交。
+报告当前阶段、`interceptorMode`、拦截页是否已打开（静默首次生成应报告未打开）、已处理事件 id、chunk 处理方式（subagent 并行或主 agent 直接处理）、`implementationUrl` 状态、变更文件和已运行校验。交互模式下 `design_prepare` 阶段，只需报告页面已打开并等待用户提交。

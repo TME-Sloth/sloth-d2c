@@ -343,6 +343,7 @@ async function main() {
 	    assert.equal(defaultHandoff.allPendingEvents.length, 0)
 	    assert.match(defaultHandoff.recommendedAction, /Run commands\.prepareFirstRun first/)
 	    assert.match(defaultHandoff.recommendedAction, /without opening Chrome or blocking for submit/)
+	    assert.equal(defaultHandoff.slothCli.available, true)
 	    assert.match(defaultHandoff.commands.openUrl, /localhost:3100\/auth-page/)
 	    assert.equal(defaultHandoff.commands.startWorkflowDev, null)
 	    assert.match(defaultHandoff.commands.prepareFirstRun, /sloth.*d2c/)
@@ -366,6 +367,38 @@ async function main() {
 	    ])
 	    assert.equal(defaultGuide.guide[0].step, 'prepare-first-run')
 	    assert.equal(defaultGuide.guide[0].command, defaultHandoff.commands.prepareFirstRun)
+	    const silentHandoff = await runCli([
+	      'workflow-handoff',
+	      '--workspace',
+	      designPrepare.workspace,
+	      '--file-key',
+	      designPrepare.fileKey,
+	      '--node-id',
+	      designPrepare.nodeId,
+	      '--agent-id',
+	      'codex',
+	      '--silent',
+	    ])
+	    assert.equal(silentHandoff.interceptorMode, 'silent')
+	    assert.equal(silentHandoff.commands.prepareFirstRun, null)
+	    assert.match(silentHandoff.commands.firstRun, /sloth.*d2c/)
+	    assert.match(silentHandoff.commands.firstRun, /--silent/)
+	    assert.match(silentHandoff.recommendedAction, /Do not open the interceptor/)
+	    const silentGuide = await runCli([
+	      'workflow-guide',
+	      '--workspace',
+	      designPrepare.workspace,
+	      '--file-key',
+	      designPrepare.fileKey,
+	      '--node-id',
+	      designPrepare.nodeId,
+	      '--agent-id',
+	      'codex',
+	      '--silent',
+	    ])
+	    assert.equal(silentGuide.mode, 'silent-first-run')
+	    assert.equal(silentGuide.guide[0].step, 'generate-chunks-silently')
+	    assert.equal(silentGuide.guide[0].command, silentHandoff.commands.firstRun)
 	    const defaultToken = new URL(defaultHandoff.commands.openUrl).searchParams.get('token')
     assert.match(defaultToken, /^sloth-d2c-[0-9a-f-]{36}$/)
 

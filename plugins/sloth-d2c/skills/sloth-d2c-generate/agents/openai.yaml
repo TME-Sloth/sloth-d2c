@@ -1,6 +1,0 @@
-interface:
-  display_name: "Sloth D2C Generate"
-  short_description: "运行 Sloth D2C CLI，并为 Codex 准备生成 chunks。"
-  icon_small: "./assets/sloth.png"
-  icon_large: "./assets/sloth.png"
-  brand_color: "#F5821F"

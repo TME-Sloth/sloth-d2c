@@ -11,7 +11,6 @@ const requiredFiles = [
   'skills/sloth-d2c-workflow/SKILL.md',
   'skills/sloth-d2c-loop/SKILL.md',
   'skills/sloth-d2c-design-diff/SKILL.md',
-  'skills/sloth-d2c-generate/SKILL.md',
 ]
 
 function assert(condition, message) {

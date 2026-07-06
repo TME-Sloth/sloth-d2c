@@ -589,6 +589,10 @@ function shouldUseLocalDesignData(args = {}) {
   return args.local === true || args.local === 'true'
 }
 
+function shouldSkipInterceptor(args = {}) {
+  return args.silent === true || args.silent === 'true'
+}
+
 function interceptorDataSource(args = {}) {
   return shouldUseLocalDesignData(args) ? 'local' : 'restful'
 }
@@ -1126,6 +1130,30 @@ function previewOutput(value, maxChars = 6000) {
   const raw = String(value || '')
   if (raw.length <= maxChars) return raw
   return `${raw.slice(0, maxChars)}\n...<truncated ${raw.length - maxChars} chars>`
+}
+
+const SLOTH_CLI_INSTALL = {
+  pnpm: 'pnpm install -g sloth-d2c-mcp --registry=https://registry.npmjs.org/',
+  npm: 'npm install -g sloth-d2c-mcp --registry=https://registry.npmjs.org/',
+}
+
+async function resolveSlothCliStatus() {
+  try {
+    await execFileAsync('sloth', ['--version'], { timeout: 5000 })
+    return { available: true }
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      return { available: true, warning: error?.message || String(error) }
+    }
+  }
+
+  return {
+    available: false,
+    install: { ...SLOTH_CLI_INSTALL },
+    verifyCommand: 'sloth --version',
+    message:
+      'Sloth CLI 未安装。先运行 commands.installSlothPnpm（有 pnpm 时）或 commands.installSlothNpm，再运行 commands.verifySloth，然后重新执行 workflow-handoff。',
+  }
 }
 
 async function runSlothD2cAtomicCommand(workspace, fileKey, nodeId, framework, args) {
@@ -1769,6 +1797,7 @@ async function designDiff(workspace, args, agentId) {
 
 async function workflowHandoff(workspace, args, agentId) {
   const status = await workflowStatus(workspace, args, agentId)
+  const slothCli = await resolveSlothCliStatus()
   const fileKey = status.selected.fileKey
   const nodeId = status.selected.nodeId
   const baseArgs = [
@@ -1798,7 +1827,8 @@ async function workflowHandoff(workspace, args, agentId) {
       )).eventBrief
     : null
   const phase = status.workflowPhase?.phase || 'design_prepare'
-  const shouldStartDevInterceptor = phase === 'design_prepare' && status.devMode && !status.devInterceptorUrl
+  const skipInterceptor = shouldSkipInterceptor(args)
+  const shouldStartDevInterceptor = phase === 'design_prepare' && status.devMode && !status.devInterceptorUrl && !skipInterceptor
   const openUrl = shouldStartDevInterceptor ? null : status.preferredInterceptorUrl || status.devInterceptorUrl || status.interceptorUrl
   const explicitToken = args.token && args.token !== true ? String(args.token) : ''
   const shouldBridgeOpenUrl = phase !== 'design_prepare' && openUrl && isCodexAppEnvironment() && !explicitToken
@@ -1852,21 +1882,36 @@ async function workflowHandoff(workspace, args, agentId) {
     ...buildSlothD2cArgs(fileKey, nodeId, String(args.framework || 'react'), args),
   ])
   const recommendedActionByPhase = {
-    design_prepare: shouldStartDevInterceptor
+    design_prepare: skipInterceptor
+      ? 'Run commands.rawSlothD2c (or commands.generateChunks when chunks are incomplete) to fetch design data and generate chunk prompts silently. Do not open the interceptor or wait for workflow.submitted. After chunks/codeAggregation/finalGenerate exist, continue directly to first implementation generation in the same turn.'
+      : shouldStartDevInterceptor
       ? 'Start the Sloth workflow dev launcher, rerun workflow-handoff, then run commands.prepareFirstRun. Open the returned codexHandoff.interceptorUrl in the Codex in-app browser and end this Codex turn. Do not click Submit/Generate or trigger the form for the user. Use shell open/system default browser/Chrome only if the Codex in-app browser is unavailable or control fails.'
       : 'Run commands.prepareFirstRun first. It runs sloth d2c in Codex handoff mode to prepare REST/local design data without opening Chrome or blocking for submit. Then open the returned codexHandoff.interceptorUrl in the Codex in-app browser, confirm it is visible, and end this Codex turn. Do not inspect controls and submit on the user’s behalf.',
-    initial_generation_requested: initialChunkStatus.needsSlothD2c
+    initial_generation_requested: skipInterceptor
+      ? initialChunkStatus.needsSlothD2c
+        ? 'Before writing implementation code, run commands.rawSlothD2c or commands.generateChunks to refresh chunk prompts. Do not open the interceptor. After chunks/codeAggregation/finalGenerate exist, follow the chunk prompts in order (group chunks, then codeAggregation.md, then finalGenerate.md), create real project components/styles/assets, start the target app preview, and write implementationUrl if loop mode is still needed later. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.'
+        : 'Follow the existing Sloth D2C chunk prompts in order (group chunks, then codeAggregation.md, then finalGenerate.md) to generate real project components/styles/assets, start the target app preview, and write implementationUrl if loop mode is still needed later. Do not open the interceptor during first generation. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.'
+      : initialChunkStatus.needsSlothD2c
       ? 'Before writing implementation code, run the sloth d2c atomic command to generate submitted group chunks/prompts. Do not hand-write the initial implementation from screenshots while chunks are missing. After chunks/codeAggregation/finalGenerate exist, claim the workflow.submitted event, follow the chunk prompts in order (group chunks, then codeAggregation.md, then finalGenerate.md), create real project components/styles/assets, start the target app preview, write implementationUrl, keep or reopen the Sloth interceptor in the Codex in-app browser, then complete the event. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.'
       : 'Claim the workflow.submitted event, follow the existing Sloth D2C chunk prompts in order (group chunks, then codeAggregation.md, then finalGenerate.md) to generate real project components/styles/assets, start the target app preview, write implementationUrl, keep or reopen the Sloth interceptor in the Codex in-app browser, then complete the workflow.submitted event. Do not navigate the in-app browser directly to the target preview URL. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.',
-    initial_generating: 'Continue the first generation path until a reachable implementation preview URL is available, then write implementationUrl so the interceptor can enter loop mode. Keep the Codex in-app browser on the Sloth interceptor.',
+    initial_generating: skipInterceptor
+      ? 'Continue the silent first generation path until a reachable implementation preview URL is available, then write implementationUrl if loop mode is still needed later. Do not open the interceptor during first generation.'
+      : 'Continue the first generation path until a reachable implementation preview URL is available, then write implementationUrl so the interceptor can enter loop mode. Keep the Codex in-app browser on the Sloth interceptor.',
     implementation_loop: 'Open the interceptor loop page and wait for the user to save generated-preview annotations.',
     implementation_annotations_requested: 'Handle the returned generated-preview annotation eventBrief, edit code, run checks, then run complete-event.',
     design_diff_requested: 'Handle the returned design diff eventBrief, compare the design and implementation, edit code, run checks, then run complete-event.',
     legacy_repair_requested: 'Handle the returned legacy repair eventBrief, edit code, run checks, then run complete-event.',
   }
+  const phaseRecommendedAction =
+    recommendedActionByPhase[phase] ||
+    (firstPending
+      ? 'Handle the returned eventBrief, edit code, run checks, then run complete-event.'
+      : 'Open the interceptor URL in the Codex in-app browser, let the user annotate, then run wait-next-event.')
 
   return {
     ...status,
+    slothCli,
+    interceptorMode: skipInterceptor ? 'silent' : 'interactive',
     nextEvent: firstPending || null,
     eventBrief: firstBrief,
     repairBrief: firstBrief,
@@ -1875,18 +1920,20 @@ async function workflowHandoff(workspace, args, agentId) {
       mustRunSlothD2cBeforeCoding: phase === 'initial_generation_requested' && initialChunkStatus.needsSlothD2c,
     },
     codexTokenBridge,
-    stopCondition:
-      phase === 'design_prepare'
-        ? 'Stop after commands.prepareFirstRun returns a codexHandoff.interceptorUrl and that URL is opened in the Codex in-app browser. Do not click Submit/Generate, do not use DOM selectors or coordinates to submit, and do not start chunks/code generation. Resume only when the user asks Codex to continue after submitting the first workflow.'
+    stopCondition: !slothCli.available
+      ? 'Install Sloth CLI, verify with commands.verifySloth, then rerun workflow-handoff.'
+      : phase === 'design_prepare'
+        ? skipInterceptor
+          ? 'Do not open the interceptor. Stop only after chunks/codeAggregation/finalGenerate exist and first implementation generation has started or completed.'
+          : 'Stop after commands.prepareFirstRun returns a codexHandoff.interceptorUrl and that URL is opened in the Codex in-app browser. Do not click Submit/Generate, do not use DOM selectors or coordinates to submit, and do not start chunks/code generation. Resume only when the user asks Codex to continue after submitting the first workflow.'
         : undefined,
-    recommendedAction:
-      recommendedActionByPhase[phase] ||
-      (firstPending
-        ? 'Handle the returned eventBrief, edit code, run checks, then run complete-event.'
-        : 'Open the interceptor URL in the Codex in-app browser, let the user annotate, then run wait-next-event.'),
+    recommendedAction: slothCli.available ? phaseRecommendedAction : slothCli.message,
     commands: {
       openUrl,
       fallbackOpenUrl: status.interceptorUrl,
+      installSlothPnpm: SLOTH_CLI_INSTALL.pnpm,
+      installSlothNpm: SLOTH_CLI_INSTALL.npm,
+      verifySloth: slothCli.verifyCommand || 'sloth --version',
       startWorkflowDev: status.devMode
         ? commandString([
             'node',
@@ -1912,7 +1959,8 @@ async function workflowHandoff(workspace, args, agentId) {
       nextEventContext: commandString(['node', scriptPath(), 'next-event-context', ...baseArgs]),
       eventBrief: commandString(['node', scriptPath(), 'event-brief', ...baseArgs]),
       initialGenerationBrief: commandString(['node', scriptPath(), 'event-brief', ...baseArgs]),
-      prepareFirstRun: prepareFirstRunCommand,
+      prepareFirstRun: skipInterceptor ? null : prepareFirstRunCommand,
+      firstRun: skipInterceptor ? rawSlothD2cCommand : prepareFirstRunCommand,
       generateChunks: generateChunksCommand,
       rawSlothD2c: rawSlothD2cCommand,
       rawSlothD2cDevFallback: rawSlothD2cDevFallbackCommand,
@@ -1994,6 +2042,8 @@ async function workflowGuide(workspace, args, agentId) {
   const isLoopWaiting = phase === 'implementation_loop'
   const needsDevInterceptor = isFirstRunWaiting && !handoff.commands.openUrl
   const needsInitialChunks = Boolean(handoff.initialGeneration?.mustRunSlothD2cBeforeCoding)
+  const needsSlothCliInstall = handoff.slothCli?.available === false
+  const skipInterceptor = handoff.interceptorMode === 'silent'
   return {
     workspace,
     selected: handoff.selected,
@@ -2001,19 +2051,44 @@ async function workflowGuide(workspace, args, agentId) {
     workflowPhase: handoff.workflowPhase,
     pendingEvents: handoff.pendingEvents,
     allPendingEvents: handoff.allPendingEvents,
-    mode: hasPendingEvent ? 'handle-pending-event' : phase,
+    slothCli: handoff.slothCli,
+    interceptorMode: handoff.interceptorMode,
+    mode: needsSlothCliInstall ? 'install-sloth-cli' : skipInterceptor && isFirstRunWaiting ? 'silent-first-run' : hasPendingEvent ? 'handle-pending-event' : phase,
     guide: [
+      ...(needsSlothCliInstall
+        ? [
+            {
+              step: 'install-sloth-cli',
+              status: 'ready',
+              action: handoff.recommendedAction,
+              command: handoff.commands.installSlothPnpm,
+              doneWhen: 'commands.verifySloth succeeds, then workflow-handoff returns slothCli.available=true.',
+            },
+          ]
+        : []),
       {
-        step: isFirstRunWaiting ? 'prepare-first-run' : 'open-interceptor',
-        status: 'ready',
-        action: needsDevInterceptor
+        step: skipInterceptor && isFirstRunWaiting ? 'generate-chunks-silently' : isFirstRunWaiting ? 'prepare-first-run' : 'open-interceptor',
+        status: needsSlothCliInstall ? 'blocked' : 'ready',
+        action: skipInterceptor && isFirstRunWaiting
+          ? 'Run commands.firstRun to generate chunks/prompts silently, then continue directly to first implementation generation. Do not open the interceptor or wait for workflow.submitted.'
+          : needsDevInterceptor
           ? 'Start the Sloth workflow dev launcher, rerun workflow-handoff, then run commands.prepareFirstRun. Open the returned codexHandoff.interceptorUrl in the Codex in-app browser, then stop for the user. Do not click Submit/Generate or trigger the form. Use shell open/system default browser/Chrome only if the Codex in-app browser is unavailable or control fails.'
           : isInitialGeneration
-          ? 'Keep the existing Sloth interceptor open while Codex performs the first generation.'
+          ? skipInterceptor
+            ? 'Generate the first implementation directly from chunks/prompts. Do not open the interceptor during first generation.'
+            : 'Keep the existing Sloth interceptor open while Codex performs the first generation.'
           : 'Run commands.prepareFirstRun to prepare design data, then open the returned codexHandoff.interceptorUrl in the Codex in-app browser, then stop for the user. Do not click Submit/Generate or trigger the form. Use shell open/system default browser/Chrome only if the Codex in-app browser is unavailable or control fails.',
-        url: handoff.commands.openUrl,
-        command: isFirstRunWaiting ? (needsDevInterceptor ? handoff.commands.startWorkflowDev : handoff.commands.prepareFirstRun) : null,
-        doneWhen: needsDevInterceptor
+        url: skipInterceptor && isFirstRunWaiting ? null : handoff.commands.openUrl,
+        command: skipInterceptor && isFirstRunWaiting
+          ? handoff.commands.firstRun
+          : isFirstRunWaiting
+            ? needsDevInterceptor
+              ? handoff.commands.startWorkflowDev
+              : handoff.commands.prepareFirstRun
+            : null,
+        doneWhen: skipInterceptor && isFirstRunWaiting
+          ? 'commands.firstRun returns ok=true with chunksDir, and first implementation generation has started or completed without opening the interceptor.'
+          : needsDevInterceptor
           ? 'workflow-handoff returns commands.openUrl.'
           : isFirstRunWaiting
             ? 'commands.prepareFirstRun returns ok=true with codexHandoff.interceptorUrl, and that URL is open in the Codex in-app browser.'
@@ -2029,7 +2104,9 @@ async function workflowGuide(workspace, args, agentId) {
               : 'Claim the workflow.submitted event, then generate the first implementation by following existing Sloth D2C prompts in order: group chunks, codeAggregation.md, then finalGenerate.md. Output real project components/styles/assets. Do not wrap absolute.html or raw HTML.'
             : 'Claim the returned pending event, then handle the eventBrief.'
           : isFirstRunWaiting
-            ? 'Do not poll here. End the turn after opening the interceptor; the user will submit the first workflow and ask Codex to continue.'
+            ? skipInterceptor
+              ? 'Continue first implementation generation from chunks/prompts in the same turn. Do not open the interceptor.'
+              : 'Do not poll here. End the turn after opening the interceptor; the user will submit the first workflow and ask Codex to continue.'
             : isLoopWaiting
               ? 'Wait specifically for annotation.submitted from generated-preview annotations.'
               : 'Wait for the next actionable workflow event.',
@@ -2043,7 +2120,9 @@ async function workflowGuide(workspace, args, agentId) {
         doneWhen: hasPendingEvent
           ? 'The interceptor timeline shows Codex is handling the event.'
           : isFirstRunWaiting
-            ? 'The user can see the first-run interceptor and Codex has reported that it is waiting for a later continuation.'
+            ? skipInterceptor
+              ? 'Initial code exists as real project components/styles/assets, chunks were consumed, and the interceptor was not opened during first generation.'
+              : 'The user can see the first-run interceptor and Codex has reported that it is waiting for a later continuation.'
             : 'wait-next-event returns timedOut=false with nextEvent and eventBrief.',
       },
       {
