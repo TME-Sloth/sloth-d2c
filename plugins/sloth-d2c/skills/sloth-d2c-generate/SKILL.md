@@ -21,7 +21,11 @@ description: "用于运行 Sloth D2C CLI、生成或刷新 chunks；适用于用
 - 无分组的提交可以只有 `codeAggregation.md` 和 `finalGenerate.md`。
 - 如果首次提交中存在分组，但目录里只有 `codeAggregation.md` 和 `finalGenerate.md`，应视为 chunks 不完整；编码前必须结合提交 payload 或 `groupsData.json` 重新运行生成。
 
+`absolute.html` 只用于设计快照、坐标和资源参考，不是生成实现的替代品。不要把它整页嵌入目标应用，也不要建议用 iframe、`srcDoc`、`dangerouslySetInnerHTML`、原始 HTML 字符串或缩放外壳来交付。后续编码必须消费 chunks/prompts 并落到项目组件代码。
+
 有分组 chunk 时，后续转码建议优先交给 subagents 并行处理。生成 skill 的职责是产出并报告可派发的 group chunk 列表；主 workflow 可按每个 `0.md`、`1.md` 等文件派发 subagent。一般最多同时 6 个 subagents，超过时可分批。
+
+后续编码必须遵循 chunks 里的提示词。group chunk 决定每个模块/组件如何实现，`codeAggregation.md` 决定组件组织、依赖和组合方式，`finalGenerate.md` 决定最终页面写入与验收要求。报告 chunks 时提醒下游 agent 按这个顺序消费，不要只读取文件名、只看摘要或选择性忽略 prompt 约束。
 
 只有当用户明确要求 Figma 插件/本地缓存数据时才使用 `--local`。否则使用默认 REST 数据源。
 

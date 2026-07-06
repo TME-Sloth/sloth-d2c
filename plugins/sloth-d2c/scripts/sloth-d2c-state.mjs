@@ -1856,8 +1856,8 @@ async function workflowHandoff(workspace, args, agentId) {
       ? 'Start the Sloth workflow dev launcher, rerun workflow-handoff, then run commands.prepareFirstRun. Open the returned codexHandoff.interceptorUrl in the Codex in-app browser and end this Codex turn. Do not click Submit/Generate or trigger the form for the user. Use shell open/system default browser/Chrome only if the Codex in-app browser is unavailable or control fails.'
       : 'Run commands.prepareFirstRun first. It runs sloth d2c in Codex handoff mode to prepare REST/local design data without opening Chrome or blocking for submit. Then open the returned codexHandoff.interceptorUrl in the Codex in-app browser, confirm it is visible, and end this Codex turn. Do not inspect controls and submit on the user’s behalf.',
     initial_generation_requested: initialChunkStatus.needsSlothD2c
-      ? 'Before writing implementation code, run the sloth d2c atomic command to generate submitted group chunks/prompts. Do not hand-write the initial implementation from screenshots while chunks are missing. After chunks/codeAggregation/finalGenerate exist, claim the workflow.submitted event, consume the chunks, start the target app preview, write implementationUrl, keep or reopen the Sloth interceptor in the Codex in-app browser, then complete the event.'
-      : 'Claim the workflow.submitted event, consume the existing Sloth D2C chunks/prompts to generate the initial code, start the target app preview, write implementationUrl, keep or reopen the Sloth interceptor in the Codex in-app browser, then complete the workflow.submitted event. Do not navigate the in-app browser directly to the target preview URL.',
+      ? 'Before writing implementation code, run the sloth d2c atomic command to generate submitted group chunks/prompts. Do not hand-write the initial implementation from screenshots while chunks are missing. After chunks/codeAggregation/finalGenerate exist, claim the workflow.submitted event, follow the chunk prompts in order (group chunks, then codeAggregation.md, then finalGenerate.md), create real project components/styles/assets, start the target app preview, write implementationUrl, keep or reopen the Sloth interceptor in the Codex in-app browser, then complete the event. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.'
+      : 'Claim the workflow.submitted event, follow the existing Sloth D2C chunk prompts in order (group chunks, then codeAggregation.md, then finalGenerate.md) to generate real project components/styles/assets, start the target app preview, write implementationUrl, keep or reopen the Sloth interceptor in the Codex in-app browser, then complete the workflow.submitted event. Do not navigate the in-app browser directly to the target preview URL. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.',
     initial_generating: 'Continue the first generation path until a reachable implementation preview URL is available, then write implementationUrl so the interceptor can enter loop mode. Keep the Codex in-app browser on the Sloth interceptor.',
     implementation_loop: 'Open the interceptor loop page and wait for the user to save generated-preview annotations.',
     implementation_annotations_requested: 'Handle the returned generated-preview annotation eventBrief, edit code, run checks, then run complete-event.',
@@ -2025,8 +2025,8 @@ async function workflowGuide(workspace, args, agentId) {
         action: hasPendingEvent
           ? phase === 'initial_generation_requested'
             ? needsInitialChunks
-              ? 'Run sloth d2c first to generate chunks/prompts for the submitted groups, then claim the workflow.submitted event and generate the first implementation from those chunks.'
-              : 'Claim the workflow.submitted event, then generate the first implementation from existing Sloth D2C chunks/prompts.'
+              ? 'Run sloth d2c first to generate chunks/prompts for the submitted groups, then claim the workflow.submitted event and generate the first implementation by following those prompts in order: group chunks, codeAggregation.md, then finalGenerate.md. Output real project components/styles/assets. Do not wrap absolute.html or raw HTML.'
+              : 'Claim the workflow.submitted event, then generate the first implementation by following existing Sloth D2C prompts in order: group chunks, codeAggregation.md, then finalGenerate.md. Output real project components/styles/assets. Do not wrap absolute.html or raw HTML.'
             : 'Claim the returned pending event, then handle the eventBrief.'
           : isFirstRunWaiting
             ? 'Do not poll here. End the turn after opening the interceptor; the user will submit the first workflow and ask Codex to continue.'
@@ -2051,14 +2051,14 @@ async function workflowGuide(workspace, args, agentId) {
         status: hasPendingEvent ? 'pending-work' : isFirstRunWaiting ? 'not-started-until-user-submit' : 'blocked-until-event',
         action: phase === 'initial_generation_requested'
           ? needsInitialChunks
-            ? 'Do not inspect app code yet. First run sloth d2c and verify chunks/codeAggregation/finalGenerate exist. Then consume those generated prompts/chunks to create the initial implementation.'
-            : 'Use the submitted groups, annotations, screenshots, and Sloth-generated chunks/prompts to create the initial implementation. Do not write implementationUrl until the target app preview is reachable. Keep the Codex in-app browser on the Sloth interceptor; do not navigate it to the target preview.'
+            ? 'Do not inspect app code yet. First run sloth d2c and verify chunks/codeAggregation/finalGenerate exist. Then follow those generated prompts/chunks in order to create the initial implementation as normal project code. absolute.html is only a reference; do not embed it.'
+            : 'Use the submitted groups, annotations, screenshots, and Sloth-generated chunks/prompts in order to create the initial implementation as normal project code. Do not write implementationUrl until the target app preview is reachable. Keep the Codex in-app browser on the Sloth interceptor; do not navigate it to the target preview. absolute.html is only a reference; do not embed it.'
           : isFirstRunWaiting
             ? 'No code inspection yet. The first actionable context appears after workflow.submitted.'
             : 'Inspect the event brief, edit code, run one narrow useful check, and avoid visual diff unless explicitly needed.',
         command: hasPendingEvent ? handoff.commands.eventBrief : isFirstRunWaiting ? null : handoff.commands.eventBrief,
         doneWhen: phase === 'initial_generation_requested'
-          ? 'Initial code exists, the target app preview is running, implementationUrl has been written, and the Sloth interceptor is still the visible Codex browser surface.'
+          ? 'Initial code exists as real project components/styles/assets, it is not an absolute.html/raw HTML wrapper, the target app preview is running, implementationUrl has been written, and the Sloth interceptor is still the visible Codex browser surface.'
           : isFirstRunWaiting
             ? 'The user submits the first workflow and asks Codex to continue.'
           : hasPendingEvent

@@ -29,7 +29,7 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs workflow-handoff \
 
 ## 首次转码约定
 
-第一次转码遵循旧版 `sloth d2c` skill 流程，但在 Codex 环境里拆成非阻塞 handoff，不依赖也不创建 loop 事件：
+第一次转码遵循 `sloth d2c` skill 流程，但在 Codex 环境里拆成非阻塞 handoff，不依赖也不创建 loop 事件：
 
 1. 运行 `commands.prepareFirstRun`，让 `sloth d2c` 拉取 REST 数据或读取本地缓存，并写入目标项目 `.sloth/<fileKey>/<nodeId>/` 的基础设计数据。
 2. 打开命令返回的 `codexHandoff.interceptorUrl`，不是预先返回的 `commands.openUrl`。
@@ -42,18 +42,22 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs workflow-handoff \
 
 有分组 chunk 时，建议把 chunk 转码工作拆给 subagents：每个 subagent 只处理一个或一小组独立的 group chunk，返回组件代码、依赖资源、样式要点和风险。这样更接近旧 skill 的并行 chunk 处理方式，也能减少主 agent 串行读取所有 chunks 后独自转码的风险。一般最多同时派发 6 个 subagents；group chunks 多于 6 个时可分批派发。若当前运行环境没有可用 subagent 能力，或任务规模很小，也可以由主 agent 直接处理，并在收尾说明采用了哪种路径。
 
+实现必须遵循 chunks 里的提示词，而不是只把 chunks 当参考资料扫一眼。处理顺序是：先按每个 group chunk（如 `0.md`、`1.md`）生成对应模块/组件，再按 `codeAggregation.md` 组织组件关系、数据流和依赖，最后按 `finalGenerate.md` 完成最终页面写入、样式整合和验收要求。不要跳过、改写或选择性忽略 chunk prompt 中的约束；如果 chunk prompt 和个人判断冲突，优先说明冲突并按 prompt 约束实现。
+
+`absolute.html` 是设计稿快照/坐标参考，不是可交付实现。可以读取它来理解布局、文案、图片资源和元素位置，但不要把它整页塞进 React/Vue/页面里，也不要用 iframe、`srcDoc`、`dangerouslySetInnerHTML`、原始 HTML 字符串或“外层缩放壳”包装它来冒充实现。首次实现必须消费 chunks/prompts，写入目标项目的真实组件、样式、资源引用和交互代码。
+
 ## 浏览器与真实预览验证
 
-当 workflow 要求打开或保持拦截页可见时，优先使用 Codex 内置浏览器。如果 Browser 插件可用，加载其 `control-in-app-browser` skill。`design_prepare` 阶段应先运行 `commands.prepareFirstRun`，再打开命令返回的 `codexHandoff.interceptorUrl`。
+当 workflow 要求打开或保持拦截页可见时，优先使用 Codex 内置浏览器。如果 Browser 插件可用，加载其 `control-in-app-browser` skill。`design_prepare` 阶段应先运行 `commands.prepareFirstRun`，再打开命令返回的 `codexHandoff.interceptorUrl`。Codex 内置浏览器只有一个当前页面，把它视为 Sloth 拦截页专用页面。
 
 只有当 Codex 内置浏览器不可用或控制失败时，才使用会打开系统默认浏览器的 shell helper，例如 `open`、`xdg-open`、`start`、`osascript`、AppleScript 或直接调用 Chrome/Safari。`curl`/HTTP 探测可以确认可达性，但不等同于完成“打开拦截页”步骤。
 
-Codex 内置浏览器应保持在 Sloth 拦截页，避免把用户正在看的 Sloth 拦截页覆盖成真实实现页或本地 Vite/预览 URL。实现页的技术验证不要依赖读取 Sloth 外层 DOM、iframe 包装对象或手动改 iframe `src`；这些只证明拦截页包装层，不证明真实实现。
+Codex 内置浏览器应保持在 Sloth 拦截页，避免把用户的 Sloth 拦截页覆盖成真实实现页或本地 Vite/预览 URL。实现页的技术验证不要依赖读取 Sloth 外层 DOM、iframe 包装对象或手动改 iframe `src`；这些只证明拦截页包装层，不证明真实实现。
 
-写入 `implementationUrl` 后，验证真实预览时优先直接访问 `implementationUrl`：
+写入 `implementationUrl` 后，验证真实预览时直接访问 `implementationUrl`，但不要通过 Codex 内置浏览器或会复用当前 Codex 页面状态的 Browser/Chrome 工具访问：
 
-- 如果 Browser/Chrome 工具有新建页面或独立 context 能力，在新页签/临时 context 打开 `implementationUrl`，不要导航当前 Sloth 拦截页。
-- 如果 Browser 工具只有当前页且会覆盖 Sloth 拦截页，不要使用它打开真实预览；改用 Playwright/Puppeteer 的一次性独立浏览器、HTTP smoke check、测试框架或目标项目已有 e2e/smoke 脚本。
+- 改用 Playwright/Puppeteer 的一次性独立浏览器进程、HTTP smoke check、测试框架或目标项目已有 e2e/smoke 脚本。
+- 如果需要真实交互验证，也在一次性自动化浏览器进程里完成；不要假设 Codex Browser/Chrome 工具有可用的新标签页或独立 context。
 - 交互验证优先在真实预览页定位可访问文本、role、label、test id 或稳定 selector 并点击/断言；只在用户问题明确发生在 Sloth 外层标注/预览容器时，才检查 Sloth 页的 iframe/DOM。
 - 截图证据需要两类时分开采集：Sloth 拦截页用于证明用户工作流/标注入口可用；真实预览页用于证明生成实现本身可用。
 
@@ -65,7 +69,7 @@ Codex 内置浏览器应保持在 Sloth 拦截页，避免把用户正在看的 
 
 此阶段不要生成 chunks、不要生成代码、不要启动目标应用、不要写入 `implementationUrl`、不要 ack 事件，也不要运行长轮询。不要读取页面控件状态后代替用户点击“提交/生成”；即使页面已有默认配置、按钮可用，也必须停住。必须使用 `commands.prepareFirstRun` 返回的 handoff URL，不要手动打开预先拼出来的拦截页 URL。
 
-### 首次转码
+### `initial_generation_requested` / `initial_generating`
 
 用户已在拦截页点击生成，提交数据通过原 submit 通道返回给 Codex；此时还没有进入 `.sloth/<fileKey>/<nodeId>/loop/`。
 
@@ -73,17 +77,15 @@ Codex 内置浏览器应保持在 Sloth 拦截页，避免把用户正在看的 
 2. 写实现代码前先运行/校验 chunk 生成命令。这对应旧流程中 `sloth d2c --json` 的第一步，会生成/刷新 chunk prompts。
 3. 校验生成的 chunk 目录。有分组提交时，应看到 `0.md`、`1.md` 等 group chunk 文件，并且有 `codeAggregation.md` 和 `finalGenerate.md`。
 4. 适合并行时，为 group chunk 文件派发 subagents 转码。每个 subagent 的输入应包含对应 `{index}.md`、相关截图/资源路径、项目技术栈约束和输出格式要求。
-5. 主 agent 汇总 subagent 输出，再消费 `codeAggregation.md` 和 `finalGenerate.md` 生成或更新目标实现，匹配旧版 chunk -> aggregation -> final write 流程。
-6. 启动或识别目标应用预览。技术 smoke check 应直接访问真实预览 URL，但使用独立页签/context 或一次性自动化浏览器，不要覆盖 Codex 内置浏览器里的 Sloth 拦截页。
+5. 主 agent 汇总 subagent 输出，再逐条消费 `codeAggregation.md` 和 `finalGenerate.md` 生成或更新目标实现，匹配旧版 group chunk -> aggregation -> final prompt -> final write 流程。
+6. 启动或识别目标应用预览。技术 smoke check 应直接访问真实预览 URL，但使用一次性 Playwright/Puppeteer/headless 浏览器、HTTP smoke check 或项目测试脚本，不要覆盖 Codex 内置浏览器里的 Sloth 拦截页。
 7. 写入 `implementationUrl`。这一步才开始 loop 状态，用于后续生成稿标注、diff 和修复事件。
 8. 重新打开或保持 Sloth 拦截页在 Codex 内置浏览器中，通过拦截页查看生成预览和接收用户标注。
 9. 运行聚焦校验；真实实现的可访问性/交互/状态变化应在 `implementationUrl` 上验证，Sloth 拦截页只用于验证工作流容器和标注入口。
 
 必需的 chunks/prompts 缺失时，不要仅凭截图手写第一次实现。
 
-### `initial_generating`
-
-继续第一次生成路径，直到存在可访问的 `implementationUrl`。保持 Codex 内置浏览器停留在 Sloth 拦截页，而不是目标预览页；需要验证生成效果时，直接访问 `implementationUrl`，但必须使用独立页签/context、一次性 Playwright/Puppeteer 浏览器或项目测试脚本，不能覆盖当前 Sloth 拦截页。
+不要把 `absolute.html` 当成实现源直接嵌入目标应用。若发现目标代码只是加载 `.sloth/.../absolute.html`、复制整段 absolute HTML、或把静态稿包在响应式壳里，应视为未完成首次实现，继续按 chunks/prompts 转成真实项目代码。
 
 ### `implementation_loop`
 
