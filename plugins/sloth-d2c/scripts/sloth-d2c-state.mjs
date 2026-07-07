@@ -85,6 +85,10 @@ function d2cDir(workspace, fileKey, nodeId) {
   return path.join(workspace, '.sloth', cleanPart(fileKey, 'file'), cleanPart(nodeId, 'root'))
 }
 
+function isWorkbenchFileKey(fileKey) {
+  return cleanPart(fileKey, 'file') === '__workbench__'
+}
+
 async function pathExists(filePath) {
   try {
     await fs.access(filePath)
@@ -138,11 +142,55 @@ function commandString(parts) {
   return parts.map((part) => shellQuote(part)).join(' ')
 }
 
+function visibleAgentArgs(agentId) {
+  return agentId && agentId !== 'codex' ? ['--agent-id', agentId] : []
+}
+
+function visibleShellAgentArgs(agentId) {
+  return visibleAgentArgs(agentId).map(shellQuote)
+}
+
 function normalizeUrl(value) {
   const raw = String(value || '').trim()
   if (!raw) return ''
   if (/^https?:\/\//i.test(raw)) return raw
   return `http://${raw}`
+}
+
+function comparableUrl(value) {
+  const normalized = normalizeUrl(value)
+  if (!normalized) return ''
+  try {
+    const url = new URL(normalized)
+    url.hash = ''
+    if (url.pathname !== '/') url.pathname = url.pathname.replace(/\/+$/, '')
+    return url.toString().replace(/\/$/, '').toLowerCase()
+  } catch {
+    return normalized.replace(/\/+$/, '').toLowerCase()
+  }
+}
+
+function codexBrowserOpenContract({ phase, interceptorMode, url, urlSource = 'commands.openUrl', afterOpen, visible = true }) {
+  if (!url || interceptorMode === 'silent') return null
+  return {
+    enabled: true,
+    surface: 'codex-in-app-browser',
+    skill: 'browser:control-in-app-browser',
+    target: 'iab',
+    action: 'navigate',
+    url,
+    urlSource,
+    visible,
+    keepFor: 'sloth-interceptor',
+    afterOpen,
+    constraints: [
+      'Keep the Codex in-app browser on the Sloth interceptor.',
+      'Do not open the generated implementation preview in this browser surface.',
+      phase === 'design_prepare'
+        ? 'Stop after the interceptor is visible; do not submit or generate for the user.'
+        : 'Use this surface only for the Sloth workflow shell and annotation loop.',
+    ],
+  }
 }
 
 function extractTitle(html) {
@@ -343,6 +391,427 @@ async function seedFigmaSession(workspace, args) {
       screenshot: path.join(targetD2cDir, 'screenshots', 'index.png'),
       snapshot: path.join(targetLoopDir, 'snapshots', 'v0001.json'),
       state: path.join(targetLoopDir, 'state.json'),
+    },
+  }
+}
+
+function workbenchHtml({ fileKey, nodeId, implementationUrl }) {
+  const title = `Sloth Workbench ${fileKey}/${nodeId || 'root'}`
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>${title}</title>
+  </head>
+  <body style="margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f6f8fa;color:#1f2937;">
+    <main data-id="workbench-root" data-name="Sloth Workbench" style="box-sizing:border-box;min-height:720px;padding:48px;">
+      <section data-id="workbench-session" data-name="Temporary Workbench Session" style="max-width:720px;border:1px solid #d0d7de;background:#fff;border-radius:8px;padding:24px;">
+        <h1 style="margin:0 0 12px;font-size:24px;">Sloth Workbench</h1>
+        <p style="margin:0 0 10px;line-height:1.6;">This temporary session was opened without a bound Figma design.</p>
+        <p style="margin:0;line-height:1.6;">Implementation URL: ${implementationUrl || 'not connected'}</p>
+      </section>
+    </main>
+  </body>
+</html>
+`
+}
+
+function workbenchNodeId(args) {
+  if (args.session && args.session !== true) return String(args.session)
+  if (args['node-id'] && args['node-id'] !== true) return String(args['node-id'])
+  const stamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14)
+  return `tmp-${stamp}-${Math.random().toString(16).slice(2, 8)}`
+}
+
+async function seedWorkbenchSession(workspace, args, implementationUrl = '') {
+  const fileKey = args['workbench-file-key'] && args['workbench-file-key'] !== true ? String(args['workbench-file-key']) : '__workbench__'
+  const nodeId = workbenchNodeId(args)
+  const now = new Date().toISOString()
+  const targetD2cDir = d2cDir(workspace, fileKey, nodeId)
+  const targetLoopDir = loopDir(workspace, fileKey, nodeId)
+  const snapshot = {
+    snapshotId: 'v0001',
+    version: 1,
+    fileKey,
+    nodeId,
+    kind: 'workbench',
+    groupsData: [],
+    canvasAnnotations: [],
+    createdAt: now,
+    source: {
+      kind: 'workbench',
+      reason: 'No matching Sloth D2C design session was found for the implementation.',
+    },
+  }
+  const state = {
+    sessionId: sessionId(fileKey, nodeId),
+    fileKey,
+    nodeId,
+    currentVersion: 1,
+    createdAt: now,
+    updatedAt: now,
+    latestSnapshotId: 'v0001',
+    agents: {},
+    workbench: {
+      temporary: true,
+      reason: snapshot.source.reason,
+    },
+  }
+  const event = {
+    id: `evt_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+    sessionId: sessionId(fileKey, nodeId),
+    version: 1,
+    snapshotId: 'v0001',
+    type: 'workbench.opened',
+    source: 'agent',
+    payload: {
+      summary: snapshot.source.reason,
+      implementationUrl: implementationUrl || undefined,
+    },
+    createdAt: now,
+  }
+
+  await fs.mkdir(path.join(targetD2cDir, 'chunks'), { recursive: true })
+  await fs.mkdir(path.join(targetLoopDir, 'snapshots'), { recursive: true })
+  await fs.writeFile(path.join(targetD2cDir, 'absolute.html'), workbenchHtml({ fileKey, nodeId, implementationUrl }), 'utf8')
+  await writeJson(path.join(targetD2cDir, 'groupsData.json'), [])
+  await fs.writeFile(
+    path.join(targetD2cDir, 'chunks', 'workbench.md'),
+    `# Sloth Workbench\n\nTemporary session for prompt, component mapping, and implementation annotation workflows.\n\n- fileKey: ${fileKey}\n- nodeId: ${nodeId}\n- implementationUrl: ${implementationUrl || 'not connected'}\n`,
+    'utf8',
+  )
+  await writeJson(path.join(targetLoopDir, 'snapshots', 'v0001.json'), snapshot)
+  await writeJson(path.join(targetLoopDir, 'state.json'), state)
+  await fs.writeFile(path.join(targetLoopDir, 'events.jsonl'), '', 'utf8')
+  await appendEvent(workspace, fileKey, nodeId, event)
+
+  return {
+    fileKey,
+    nodeId,
+    state,
+    event,
+    d2cDir: targetD2cDir,
+    loopDir: targetLoopDir,
+    files: {
+      absoluteHtml: path.join(targetD2cDir, 'absolute.html'),
+      groupsData: path.join(targetD2cDir, 'groupsData.json'),
+      state: path.join(targetLoopDir, 'state.json'),
+      snapshot: path.join(targetLoopDir, 'snapshots', 'v0001.json'),
+    },
+  }
+}
+
+async function resolveImplementationSession(workspace, args, implementationUrl = '') {
+  const sessions = await findD2cSessions(workspace)
+  const targetComparableUrl = comparableUrl(implementationUrl)
+  const candidates = []
+
+  for (const session of sessions) {
+    const state = await getState(workspace, session.fileKey, session.nodeId)
+    const stateComparableUrl = comparableUrl(state.implementationUrl)
+    let score = 0
+    const reasons = []
+    if (targetComparableUrl && stateComparableUrl && targetComparableUrl === stateComparableUrl) {
+      score += 100
+      reasons.push('implementationUrl matched existing loop state')
+    } else if (targetComparableUrl) {
+      continue
+    } else if (!targetComparableUrl && state.implementationUrl) {
+      score += 40
+      reasons.push('session already has an implementationUrl')
+    }
+    if (session.hasWorkflowState) {
+      score += 10
+      reasons.push('loop state exists')
+    }
+    if (session.hasGroupsData) {
+      score += 5
+      reasons.push('groupsData exists')
+    }
+    if (session.hasChunks) {
+      score += 5
+      reasons.push('chunks directory exists')
+    }
+    if (isWorkbenchFileKey(session.fileKey)) {
+      score -= 30
+      reasons.push('temporary workbench session')
+    }
+    if (score <= 0) continue
+    candidates.push({
+      ...session,
+      score,
+      confidence: score >= 90 ? 'high' : score >= 50 ? 'medium' : 'low',
+      reason: reasons.join('; '),
+      state,
+      workbench: isWorkbenchFileKey(session.fileKey) || Boolean(state.workbench?.temporary),
+    })
+  }
+
+  candidates.sort((a, b) => b.score - a.score || String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
+  const selected = candidates[0] || null
+  if (!selected) {
+    return {
+      mode: 'unresolved',
+      confidence: 'none',
+      candidates,
+      reason: targetComparableUrl
+        ? 'No local Sloth D2C session matched the implementation URL.'
+        : 'No implementation URL was provided or detected, and no usable Sloth session was selected.',
+    }
+  }
+
+  return {
+    mode: selected.workbench ? 'resolved-workbench-session' : 'resolved-design-session',
+    confidence: selected.confidence,
+    fileKey: selected.fileKey,
+    nodeId: selected.nodeId,
+    reason: selected.reason,
+    selected,
+    candidates,
+  }
+}
+
+async function detectStandaloneImplementationUrl(args) {
+  const candidates = implementationUrlCandidates(args, {})
+  for (const url of candidates) {
+    const probe = await probeImplementationUrl(url, Number(args['timeout-ms'] || 300))
+    if (probe.reachable) {
+      return {
+        url: probe.url,
+        probe,
+        detected: true,
+      }
+    }
+  }
+  return {
+    url: '',
+    probe: null,
+    detected: false,
+  }
+}
+
+function interceptorOpenUrlForSession(args, fileKey, nodeId) {
+  const workflowToken = createWorkflowToken(args)
+  return buildInterceptorUrl({
+    host: String(args.host || 'localhost'),
+    port: String(args.port || '3100'),
+    fileKey,
+    nodeId,
+    token: workflowToken,
+    mode: String(args.mode || 'create'),
+    supportSampling: String(args['support-sampling'] || '1'),
+    supportRoots: String(args['support-roots'] || '1'),
+    dataSource: String(args['data-source'] || 'local'),
+    workspace: args.workspace,
+  })
+}
+
+function askUserIntentResponse(workspace, resolution) {
+  return {
+    ok: false,
+    mode: 'ask-user-intent',
+    action: 'ask_user_intent',
+    workspace,
+    resolution,
+    message:
+      'Could not infer a Sloth design session or implementation page. Ask whether the user wants to convert code from a design or open the interceptor for an existing implementation page.',
+    question:
+      '你是要转代码，还是打开拦截页做标注/调提示词？转代码需要 Figma 链接或 Figma 插件里的 fileKey/nodeId；打开拦截页需要项目目录和要标注的页面 URL。',
+    options: [
+      {
+        id: 'convert-code',
+        label: '转代码',
+        needs: ['Figma 链接，或 fileKey + nodeId', '目标项目目录'],
+      },
+      {
+        id: 'open-interceptor',
+        label: '打开拦截页',
+        needs: ['目标项目目录', '要标注/调试的页面 URL'],
+      },
+    ],
+  }
+}
+
+async function openInterceptor(workspace, args, agentId) {
+  const explicitUrl = args.url && args.url !== true ? normalizeUrl(args.url) : ''
+  const explicitFileKey = args['file-key'] && args['file-key'] !== true ? String(args['file-key']) : ''
+  const explicitNodeId = args['node-id'] && args['node-id'] !== true ? String(args['node-id']) : undefined
+  let detectedUrl = { url: explicitUrl, detected: false, probe: null }
+  let implementationUrl = explicitUrl
+  let resolution = null
+  let fileKey
+  let nodeId
+  let seededWorkbench = null
+  let implementationWrite = null
+
+  if (!explicitUrl && !explicitFileKey) {
+    resolution = await resolveImplementationSession(workspace, args, '')
+    if (resolution.mode !== 'unresolved') {
+      implementationUrl = resolution.selected?.state?.implementationUrl || ''
+      detectedUrl = { url: implementationUrl, detected: false, probe: null }
+    } else {
+      detectedUrl = await detectStandaloneImplementationUrl(args)
+      implementationUrl = detectedUrl.url
+    }
+  }
+
+  if (explicitFileKey) {
+    fileKey = explicitFileKey
+    nodeId = explicitNodeId
+    resolution = {
+      mode: isWorkbenchFileKey(fileKey) ? 'explicit-workbench-session' : 'explicit-session',
+      confidence: 'explicit',
+      fileKey,
+      nodeId,
+      reason: 'User supplied fileKey/nodeId.',
+    }
+  } else {
+    if (!resolution || resolution.mode === 'unresolved') {
+      resolution = await resolveImplementationSession(workspace, args, implementationUrl)
+    }
+    if (resolution.mode === 'unresolved') {
+      if (!implementationUrl) {
+        return askUserIntentResponse(workspace, resolution)
+      }
+      const workbenchFileKey = args['workbench-file-key'] && args['workbench-file-key'] !== true ? String(args['workbench-file-key']) : '__workbench__'
+      const requestedWorkbenchNodeId = args.session && args.session !== true ? String(args.session) : ''
+      if (requestedWorkbenchNodeId && (await pathExists(d2cDir(workspace, workbenchFileKey, requestedWorkbenchNodeId)))) {
+        fileKey = workbenchFileKey
+        nodeId = requestedWorkbenchNodeId
+        resolution = {
+          mode: 'resolved-workbench-session',
+          confidence: 'explicit',
+          fileKey,
+          nodeId,
+          reason: 'Requested workbench session already exists.',
+        }
+      } else {
+        seededWorkbench = await seedWorkbenchSession(workspace, args, implementationUrl)
+        fileKey = seededWorkbench.fileKey
+        nodeId = seededWorkbench.nodeId
+        resolution = {
+          mode: 'temporary-workbench',
+          confidence: 'none',
+          fileKey,
+          nodeId,
+          reason:
+            'No matching Sloth D2C design session was found. The interceptor is opened as a temporary workbench; the implementation may have been converted by another path.',
+          unresolvedReason: resolution.reason,
+        }
+      }
+    } else {
+      fileKey = resolution.fileKey
+      nodeId = resolution.nodeId
+    }
+  }
+
+  if (implementationUrl) {
+    const state = await getState(workspace, fileKey, nodeId)
+    if (comparableUrl(state.implementationUrl) !== comparableUrl(implementationUrl)) {
+      implementationWrite = await setImplementationUrl(workspace, {
+        ...args,
+        'file-key': fileKey,
+        'node-id': nodeId,
+        url: implementationUrl,
+        summary:
+          resolution.mode === 'temporary-workbench'
+            ? 'Temporary workbench implementation preview connected.'
+            : 'Implementation preview connected by open-interceptor.',
+      })
+    }
+  }
+
+  const state = await getState(workspace, fileKey, nodeId)
+  const openUrl = interceptorOpenUrlForSession(args, fileKey, nodeId)
+  const phase = state.implementationUrl ? 'implementation_loop' : 'workbench'
+  const codexTokenBridge =
+    openUrl && isCodexAppEnvironment() && !(args.token && args.token !== true)
+      ? await ensureCodexTokenBridge({
+          workspace,
+          fileKey,
+          nodeId,
+          host: String(args.host || 'localhost'),
+          port: String(args.port || '3100'),
+          token: new URL(openUrl).searchParams.get('token'),
+          agentId,
+        })
+      : {
+          enabled: false,
+          status: args.token && args.token !== true ? 'explicit-token' : isCodexAppEnvironment() ? 'no-open-url' : 'not-codex-app',
+        }
+
+  return {
+    ok: true,
+    mode: 'open-interceptor',
+    action: 'open_codex_browser_recommended',
+    workspace,
+    selected: {
+      fileKey,
+      nodeId,
+      sessionId: sessionId(fileKey, nodeId),
+      workbench: resolution.mode.includes('workbench') || isWorkbenchFileKey(fileKey),
+    },
+    resolution,
+    implementation: {
+      url: state.implementationUrl || '',
+      detected: detectedUrl.detected,
+      probe: detectedUrl.probe,
+      wrote: Boolean(implementationWrite),
+    },
+    seededWorkbench,
+    state,
+    interceptorUrl: openUrl,
+    codexBrowserOpen: codexBrowserOpenContract({
+      phase,
+      interceptorMode: 'interactive',
+      url: openUrl,
+      urlSource: 'open-interceptor.interceptorUrl',
+      afterOpen: state.implementationUrl ? 'wait-for-user-annotation' : 'workbench-open',
+    }),
+    codexTokenBridge,
+    recommendedAction: state.implementationUrl
+      ? 'Open codexBrowserOpen.url in the Codex in-app browser. The interceptor can be used for implementation annotations, prompt tuning, and component mapping.'
+      : 'Open codexBrowserOpen.url in the Codex in-app browser. No implementation URL is connected yet; use set-implementation-url when a preview URL is available.',
+    stopCondition:
+      'If the user asked to open or operate the Sloth interceptor, continue until codexBrowserOpen.url is opened. If the user only asked to prepare or inspect, return the interceptor context and next command.',
+    constraints: ['Do not open the implementation URL in the Codex in-app browser when the Sloth interceptor should stay visible.'],
+    commands: {
+      setImplementationUrl: commandString([
+        'node',
+        scriptPath(),
+        'set-implementation-url',
+        '--workspace',
+        workspace,
+        '--file-key',
+        fileKey,
+        ...(nodeId ? ['--node-id', nodeId] : []),
+        ...visibleAgentArgs(agentId),
+        '--url',
+        '<local implementation URL>',
+      ]),
+      workflowHandoff: commandString([
+        'node',
+        scriptPath(),
+        'workflow-handoff',
+        '--workspace',
+        workspace,
+        '--file-key',
+        fileKey,
+        ...(nodeId ? ['--node-id', nodeId] : []),
+        ...visibleAgentArgs(agentId),
+      ]),
+      waitNextEvent: commandString([
+        'node',
+        scriptPath(),
+        'wait-next-event',
+        '--workspace',
+        workspace,
+        '--file-key',
+        fileKey,
+        ...(nodeId ? ['--node-id', nodeId] : []),
+        ...visibleAgentArgs(agentId),
+      ]),
     },
   }
 }
@@ -597,7 +1066,7 @@ function interceptorDataSource(args = {}) {
   return shouldUseLocalDesignData(args) ? 'local' : 'restful'
 }
 
-function buildInterceptorUrl({ host = 'localhost', port = '3100', fileKey, nodeId, token, mode = 'create', supportSampling = '1', supportRoots = '1', dataSource = 'restful' }) {
+function buildInterceptorUrl({ host = 'localhost', port = '3100', fileKey, nodeId, token, mode = 'create', supportSampling = '1', supportRoots = '1', dataSource = 'restful', workspace }) {
   const url = new URL(`http://${host}:${port}/auth-page`)
   url.searchParams.set('token', token)
   url.searchParams.set('fileKey', fileKey)
@@ -606,6 +1075,7 @@ function buildInterceptorUrl({ host = 'localhost', port = '3100', fileKey, nodeI
   url.searchParams.set('supportSampling', supportSampling)
   url.searchParams.set('supportRoots', supportRoots)
   url.searchParams.set('dataSource', dataSource)
+  if (workspace) url.searchParams.set('workspaceRoot', path.resolve(workspace))
   return url.toString()
 }
 
@@ -750,6 +1220,7 @@ async function workflowStatus(workspace, args, agentId) {
     supportSampling: String(args['support-sampling'] || '1'),
     supportRoots: String(args['support-roots'] || '1'),
     dataSource: interceptorDataSource(args),
+    workspace,
   })
   const explicitDevPort = args['dev-port'] && args['dev-port'] !== true ? String(args['dev-port']) : ''
   const devMode = args.dev === true || args.dev === 'true' || Boolean(explicitDevPort)
@@ -1130,6 +1601,31 @@ function previewOutput(value, maxChars = 6000) {
   const raw = String(value || '')
   if (raw.length <= maxChars) return raw
   return `${raw.slice(0, maxChars)}\n...<truncated ${raw.length - maxChars} chars>`
+}
+
+function parseJsonCommandOutput(stdout) {
+  const raw = String(stdout || '').trim()
+  if (!raw) return null
+  try {
+    return JSON.parse(raw)
+  } catch {}
+
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  if (fenced?.[1]) {
+    try {
+      return JSON.parse(fenced[1].trim())
+    } catch {}
+  }
+
+  const objectStart = raw.indexOf('{')
+  const objectEnd = raw.lastIndexOf('}')
+  if (objectStart >= 0 && objectEnd > objectStart) {
+    try {
+      return JSON.parse(raw.slice(objectStart, objectEnd + 1))
+    } catch {}
+  }
+
+  return null
 }
 
 const SLOTH_CLI_INSTALL = {
@@ -1615,8 +2111,7 @@ async function eventBrief(workspace, args, agentId) {
     '--file-key',
     shellQuote(selected.fileKey),
     ...(selected.nodeId ? ['--node-id', shellQuote(selected.nodeId)] : []),
-    '--agent-id',
-    shellQuote(agentId),
+    ...visibleShellAgentArgs(agentId),
     '--event-ids',
     shellQuote(eventId),
     '--summary',
@@ -1631,8 +2126,7 @@ async function eventBrief(workspace, args, agentId) {
     '--file-key',
     shellQuote(selected.fileKey),
     ...(selected.nodeId ? ['--node-id', shellQuote(selected.nodeId)] : []),
-    '--agent-id',
-    shellQuote(agentId),
+    ...visibleShellAgentArgs(agentId),
     '--event-ids',
     shellQuote(eventId),
     '--summary',
@@ -1806,8 +2300,7 @@ async function workflowHandoff(workspace, args, agentId) {
     '--file-key',
     fileKey,
     ...(nodeId ? ['--node-id', nodeId] : []),
-    '--agent-id',
-    agentId,
+    ...visibleAgentArgs(agentId),
   ]
   const portArgs = [
     ...(args.port && args.port !== true ? ['--port', String(args.port)] : []),
@@ -1907,6 +2400,18 @@ async function workflowHandoff(workspace, args, agentId) {
     (firstPending
       ? 'Handle the returned eventBrief, edit code, run checks, then run complete-event.'
       : 'Open the interceptor URL in the Codex in-app browser, let the user annotate, then run wait-next-event.')
+  const codexBrowserOpen = codexBrowserOpenContract({
+    phase,
+    interceptorMode: skipInterceptor ? 'silent' : 'interactive',
+    url: openUrl,
+    urlSource: phase === 'design_prepare' ? 'commands.prepareFirstRun.codexHandoff.interceptorUrl' : 'commands.openUrl',
+    afterOpen:
+      phase === 'design_prepare'
+        ? 'return-to-user'
+        : firstPending
+          ? 'keep-open-while-handling-event'
+          : 'wait-for-user-annotation',
+  })
 
   return {
     ...status,
@@ -1919,6 +2424,7 @@ async function workflowHandoff(workspace, args, agentId) {
       chunkStatus: initialChunkStatus,
       mustRunSlothD2cBeforeCoding: phase === 'initial_generation_requested' && initialChunkStatus.needsSlothD2c,
     },
+    codexBrowserOpen,
     codexTokenBridge,
     stopCondition: !slothCli.available
       ? 'Install Sloth CLI, verify with commands.verifySloth, then rerun workflow-handoff.'
@@ -2033,6 +2539,135 @@ async function workflowHandoff(workspace, args, agentId) {
   }
 }
 
+async function prepareInterceptor(workspace, args, agentId) {
+  const handoff = await workflowHandoff(workspace, args, agentId)
+  const phase = handoff.workflowPhase?.phase || 'design_prepare'
+
+  if (handoff.slothCli?.available === false) {
+    return {
+      ok: false,
+      mode: 'install-sloth-cli',
+      action: 'install_sloth_cli',
+      selected: handoff.selected,
+      slothCli: handoff.slothCli,
+      command: handoff.commands.installSlothPnpm,
+      stopCondition: handoff.stopCondition,
+      message: handoff.slothCli.message,
+    }
+  }
+
+  if (handoff.interceptorMode === 'silent') {
+    return {
+      ok: false,
+      mode: 'silent-first-run',
+      action: 'run_silent_first_generation',
+      selected: handoff.selected,
+      command: handoff.commands.firstRun,
+      stopCondition: 'Silent mode does not open the Sloth interceptor.',
+      message: 'Silent mode should run first generation directly; prepare-interceptor is only for the interactive Codex browser path.',
+    }
+  }
+
+  if (phase !== 'design_prepare') {
+    return {
+      ok: true,
+      mode: phase,
+      action: handoff.nextEvent ? 'handle_pending_event' : 'continue_existing_workflow',
+      selected: handoff.selected,
+      workflowPhase: handoff.workflowPhase,
+      nextEvent: handoff.nextEvent,
+      eventBrief: handoff.eventBrief,
+      interceptorUrl: handoff.commands.openUrl,
+      codexBrowserOpen: handoff.codexBrowserOpen,
+      stopCondition: 'Do not run first-run preparation again; continue from the returned workflow phase.',
+      handoff,
+    }
+  }
+
+  if (handoff.commands.startWorkflowDev && !handoff.commands.openUrl) {
+    return {
+      ok: false,
+      mode: 'start-workflow-dev',
+      action: 'start_workflow_dev_then_retry',
+      selected: handoff.selected,
+      command: handoff.commands.startWorkflowDev,
+      stopCondition: 'Start the workflow dev interceptor, then rerun prepare-interceptor.',
+      message: 'No Sloth workflow dev interceptor is available yet.',
+    }
+  }
+
+  const fileKey = handoff.selected.fileKey
+  const nodeId = handoff.selected.nodeId
+  const framework = String(args.framework || 'react')
+  const d2cArgs = buildSlothD2cHandoffArgs(fileKey, nodeId, framework, args)
+  const command = commandString(['sloth', ...d2cArgs])
+  const env = { ...process.env, SLOTH_WORKSPACE_ROOT: workspace }
+  let run
+
+  try {
+    run = await execFileAsync('sloth', d2cArgs, {
+      cwd: workspace,
+      env,
+      maxBuffer: 30 * 1024 * 1024,
+    })
+  } catch (error) {
+    return {
+      ok: false,
+      mode: 'prepare-interceptor',
+      action: 'fix_prepare_first_run_failure',
+      selected: handoff.selected,
+      command,
+      exitCode: error?.code,
+      stdoutPreview: previewOutput(error?.stdout),
+      stderrPreview: previewOutput(error?.stderr || error?.message),
+      message: 'Sloth first-run preparation failed.',
+    }
+  }
+
+  const parsed = parseJsonCommandOutput(run.stdout)
+  const codexHandoff = parsed?.codexHandoff || null
+  const interceptorUrl = codexHandoff?.interceptorUrl || parsed?.interceptorUrl || ''
+  if (!interceptorUrl) {
+    return {
+      ok: false,
+      mode: 'prepare-interceptor',
+      action: 'inspect_prepare_first_run_output',
+      selected: handoff.selected,
+      command,
+      stdoutPreview: previewOutput(run.stdout),
+      stderrPreview: previewOutput(run.stderr),
+      message: 'Sloth first-run preparation did not return codexHandoff.interceptorUrl.',
+    }
+  }
+
+  return {
+    ok: true,
+    mode: 'prepare-interceptor',
+    action: 'open_codex_browser_and_stop',
+    selected: handoff.selected,
+    workflowPhase: handoff.workflowPhase,
+    command,
+    interceptorUrl,
+    codexHandoff: {
+      prepared: codexHandoff?.prepared,
+      reason: codexHandoff?.reason,
+      d2cDir: codexHandoff?.d2cDir,
+      copiedFiles: codexHandoff?.copiedFiles,
+      bridge: codexHandoff?.bridge,
+    },
+    codexBrowserOpen: codexBrowserOpenContract({
+      phase,
+      interceptorMode: 'interactive',
+      url: interceptorUrl,
+      urlSource: 'prepare-interceptor.codexHandoff.interceptorUrl',
+      afterOpen: 'return-to-user',
+    }),
+    stopCondition:
+      'Open codexBrowserOpen.url in the Codex in-app browser, confirm the Sloth interceptor is visible, then stop for the user to submit grouping/config.',
+    forbidden: ['submit_interceptor', 'generate_code', 'poll_event', 'write_implementation_url'],
+  }
+}
+
 async function workflowGuide(workspace, args, agentId) {
   const handoff = await workflowHandoff(workspace, args, agentId)
   const hasPendingEvent = Boolean(handoff.nextEvent)
@@ -2053,6 +2688,7 @@ async function workflowGuide(workspace, args, agentId) {
     allPendingEvents: handoff.allPendingEvents,
     slothCli: handoff.slothCli,
     interceptorMode: handoff.interceptorMode,
+    codexBrowserOpen: handoff.codexBrowserOpen,
     mode: needsSlothCliInstall ? 'install-sloth-cli' : skipInterceptor && isFirstRunWaiting ? 'silent-first-run' : hasPendingEvent ? 'handle-pending-event' : phase,
     guide: [
       ...(needsSlothCliInstall
@@ -2079,6 +2715,7 @@ async function workflowGuide(workspace, args, agentId) {
             : 'Keep the existing Sloth interceptor open while Codex performs the first generation.'
           : 'Run commands.prepareFirstRun to prepare design data, then open the returned codexHandoff.interceptorUrl in the Codex in-app browser, then stop for the user. Do not click Submit/Generate or trigger the form. Use shell open/system default browser/Chrome only if the Codex in-app browser is unavailable or control fails.',
         url: skipInterceptor && isFirstRunWaiting ? null : handoff.commands.openUrl,
+        codexBrowserOpen: handoff.codexBrowserOpen,
         command: skipInterceptor && isFirstRunWaiting
           ? handoff.commands.firstRun
           : isFirstRunWaiting
@@ -2172,8 +2809,7 @@ async function workflowGuide(workspace, args, agentId) {
           '--file-key',
           handoff.selected.fileKey,
           ...(handoff.selected.nodeId ? ['--node-id', handoff.selected.nodeId] : []),
-          '--agent-id',
-          agentId,
+          ...visibleAgentArgs(agentId),
           ...(args.port && args.port !== true ? ['--port', String(args.port)] : []),
           ...(args['dev-port'] && args['dev-port'] !== true ? ['--dev-port', String(args['dev-port'])] : []),
         ]),
@@ -2258,6 +2894,16 @@ async function main() {
     return
   }
 
+  if (command === 'prepare-interceptor') {
+    printJson(await prepareInterceptor(workspace, args, agentId))
+    return
+  }
+
+  if (command === 'open-interceptor') {
+    printJson(await openInterceptor(workspace, args, agentId))
+    return
+  }
+
   if (command === 'workflow-guide') {
     printJson(await workflowGuide(workspace, args, agentId))
     return
@@ -2277,6 +2923,7 @@ async function main() {
         supportSampling: String(args['support-sampling'] || '1'),
         supportRoots: String(args['support-roots'] || '1'),
         dataSource: interceptorDataSource(args),
+        workspace,
       })}\n`,
     )
     return

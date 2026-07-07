@@ -226,6 +226,51 @@ async function createDesignPrepareWorkspace() {
   return { workspace, fileKey, nodeId }
 }
 
+async function createEmptyWorkspace() {
+  return fs.mkdtemp(path.join(os.tmpdir(), 'sloth-d2c-empty-'))
+}
+
+async function createFakeSlothBin() {
+  const binDir = await fs.mkdtemp(path.join(os.tmpdir(), 'sloth-d2c-fake-bin-'))
+  const slothPath = path.join(binDir, 'sloth')
+  await fs.writeFile(
+    slothPath,
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === '--version') {
+  console.log('sloth-test 1.0.0');
+  process.exit(0);
+}
+if (args[0] !== 'd2c') {
+  console.error('unexpected command: ' + args.join(' '));
+  process.exit(2);
+}
+function valueOf(name) {
+  const index = args.indexOf(name);
+  return index >= 0 ? args[index + 1] : '';
+}
+const fileKey = valueOf('--file-key');
+const nodeId = valueOf('--node-id');
+console.log(JSON.stringify({
+  codexHandoff: {
+    enabled: true,
+    prepared: true,
+    token: 'sloth-d2c-test-token',
+    interceptorUrl: 'http://localhost:3100/auth-page?token=sloth-d2c-test-token&fileKey=' + encodeURIComponent(fileKey) + '&nodeId=' + encodeURIComponent(nodeId) + '&mode=create',
+    d2cDir: process.env.SLOTH_WORKSPACE_ROOT + '/.sloth/' + fileKey + '/' + nodeId,
+    copiedFiles: ['absolute.html', 'groupsData.json'],
+    bridge: { pid: 12345, socketPort: 3101 },
+    nextAction: 'open_in_codex_browser'
+  },
+  content: [{ type: 'text', text: 'Codex handoff ready' }]
+}));
+`,
+    'utf8',
+  )
+  await fs.chmod(slothPath, 0o755)
+  return binDir
+}
+
 function listen(server) {
   return new Promise((resolve) => {
     server.listen(0, '127.0.0.1', () => resolve(server.address()))
@@ -318,10 +363,122 @@ async function main() {
     assert.equal(screenshotTarget.screenshotPath, path.join(d2cDir(workspace, fileKey, nodeId), 'screenshots', 'implementation', 'preview_check.png'))
     await assert.rejects(fs.stat(path.join(loopDir(workspace, fileKey, nodeId), 'implementation-screenshots')), /ENOENT/)
 
+    const autoResolvedOpen = await runCli([
+      'open-interceptor',
+      '--workspace',
+      workspace,
+      '--agent-id',
+      'codex',
+      '--url',
+      'http://127.0.0.1:9999/',
+      '--port',
+      String(address.port),
+    ])
+    assert.equal(autoResolvedOpen.ok, true)
+    assert.equal(autoResolvedOpen.action, 'open_codex_browser_recommended')
+    assert.equal(autoResolvedOpen.resolution.mode, 'resolved-design-session')
+    assert.equal(autoResolvedOpen.resolution.confidence, 'high')
+    assert.equal(autoResolvedOpen.selected.fileKey, fileKey)
+    assert.equal(autoResolvedOpen.selected.nodeId, nodeId)
+    assert.equal(autoResolvedOpen.selected.workbench, false)
+    assert.equal(autoResolvedOpen.implementation.wrote, false)
+    assert.doesNotMatch(autoResolvedOpen.commands.workflowHandoff, /--agent-id/)
+    assert.doesNotMatch(autoResolvedOpen.commands.waitNextEvent, /--agent-id/)
+    assert.match(autoResolvedOpen.stopCondition, /If the user asked to open/)
+
+    const resolvedOpen = await runCli([
+      'open-interceptor',
+      '--workspace',
+      workspace,
+      '--file-key',
+      fileKey,
+      '--node-id',
+      nodeId,
+      '--agent-id',
+      'codex',
+      '--url',
+      'http://127.0.0.1:9999/',
+      '--port',
+      String(address.port),
+    ])
+    assert.equal(resolvedOpen.ok, true)
+    assert.equal(resolvedOpen.resolution.mode, 'explicit-session')
+    assert.equal(resolvedOpen.selected.fileKey, fileKey)
+    assert.equal(resolvedOpen.selected.workbench, false)
+    assert.equal(resolvedOpen.implementation.wrote, false)
+    assert.match(resolvedOpen.interceptorUrl, new RegExp(`127\\.0\\.0\\.1:${address.port}|localhost:${address.port}`))
+    assert.equal(resolvedOpen.codexBrowserOpen.url, resolvedOpen.interceptorUrl)
+
+    const implementationUrl = `http://127.0.0.1:${address.port}/preview`
+    const workbenchOpen = await runCli([
+      'open-interceptor',
+      '--workspace',
+      workspace,
+      '--agent-id',
+      'codex',
+      '--url',
+      implementationUrl,
+      '--session',
+      'prompt-lab',
+      '--port',
+      String(address.port),
+    ])
+    assert.equal(workbenchOpen.ok, true)
+    assert.equal(workbenchOpen.resolution.mode, 'temporary-workbench')
+    assert.equal(workbenchOpen.selected.fileKey, '__workbench__')
+    assert.equal(workbenchOpen.selected.nodeId, 'prompt-lab')
+    assert.equal(workbenchOpen.selected.workbench, true)
+    assert.equal(workbenchOpen.implementation.url, implementationUrl)
+    assert.equal(workbenchOpen.implementation.wrote, true)
+    assert.doesNotMatch(workbenchOpen.commands.setImplementationUrl, /--agent-id/)
+    assert.doesNotMatch(workbenchOpen.commands.workflowHandoff, /--agent-id/)
+    assert.match(workbenchOpen.seededWorkbench.files.absoluteHtml, /\.sloth\/__workbench__\/prompt-lab\/absolute\.html$/)
+    await fs.stat(path.join(d2cDir(workspace, '__workbench__', 'prompt-lab'), 'absolute.html'))
+    await fs.stat(path.join(loopDir(workspace, '__workbench__', 'prompt-lab'), 'state.json'))
+
+    const reopenedWorkbench = await runCli([
+      'open-interceptor',
+      '--workspace',
+      workspace,
+      '--agent-id',
+      'codex',
+      '--url',
+      implementationUrl,
+      '--port',
+      String(address.port),
+    ])
+    assert.equal(reopenedWorkbench.resolution.mode, 'resolved-workbench-session')
+    assert.equal(reopenedWorkbench.selected.fileKey, '__workbench__')
+    assert.equal(reopenedWorkbench.selected.nodeId, 'prompt-lab')
+    assert.equal(reopenedWorkbench.implementation.wrote, false)
+
     process.stdout.write('sloth-d2c-state tests passed\n')
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
     await fs.rm(workspace, { recursive: true, force: true })
+  }
+
+  const emptyWorkspace = await createEmptyWorkspace()
+  try {
+    const unresolvedOpen = await runCli([
+      'open-interceptor',
+      '--workspace',
+      emptyWorkspace,
+      '--agent-id',
+      'codex',
+      '--ports',
+      '9',
+      '--timeout-ms',
+      '10',
+    ])
+    assert.equal(unresolvedOpen.ok, false)
+    assert.equal(unresolvedOpen.action, 'ask_user_intent')
+    assert.match(unresolvedOpen.question, /转代码/)
+    assert.match(unresolvedOpen.question, /页面 URL/)
+    assert.deepEqual(unresolvedOpen.options.map((option) => option.id), ['convert-code', 'open-interceptor'])
+    await assert.rejects(fs.stat(path.join(emptyWorkspace, '.sloth')), /ENOENT/)
+  } finally {
+    await fs.rm(emptyWorkspace, { recursive: true, force: true })
   }
 
   const designPrepare = await createDesignPrepareWorkspace()
@@ -351,9 +508,43 @@ async function main() {
 	    assert.doesNotMatch(defaultHandoff.commands.prepareFirstRun, /CODEX_SHELL=1/)
 	    assert.doesNotMatch(defaultHandoff.commands.prepareFirstRun, /--no-open/)
 	    assert.doesNotMatch(defaultHandoff.commands.prepareFirstRun, /--silent/)
+	    assert.doesNotMatch(defaultHandoff.commands.waitNextEvent, /--agent-id/)
+	    assert.doesNotMatch(defaultHandoff.commands.setImplementationUrl, /--agent-id/)
+	    assert.equal(defaultHandoff.codexBrowserOpen.enabled, true)
+	    assert.equal(defaultHandoff.codexBrowserOpen.skill, 'browser:control-in-app-browser')
+	    assert.equal(defaultHandoff.codexBrowserOpen.target, 'iab')
+	    assert.equal(defaultHandoff.codexBrowserOpen.urlSource, 'commands.prepareFirstRun.codexHandoff.interceptorUrl')
+	    assert.equal(defaultHandoff.codexBrowserOpen.afterOpen, 'return-to-user')
 	    assert.match(defaultHandoff.commands.rawSlothD2c, /sloth.*d2c/)
 	    assert.match(defaultHandoff.commands.rawSlothD2c, /--silent/)
 	    assert.deepEqual(defaultHandoff.warnings, [])
+	    const fakeSlothBin = await createFakeSlothBin()
+	    const prepared = await runCli(
+	      [
+	        'prepare-interceptor',
+	        '--workspace',
+	        designPrepare.workspace,
+	        '--file-key',
+	        designPrepare.fileKey,
+	        '--node-id',
+	        designPrepare.nodeId,
+	        '--agent-id',
+	        'codex',
+	      ],
+	      {
+	        env: {
+	          PATH: `${fakeSlothBin}${path.delimiter}${process.env.PATH}`,
+	          CODEX_SHELL: '1',
+	        },
+	      },
+	    )
+	    assert.equal(prepared.ok, true)
+	    assert.equal(prepared.action, 'open_codex_browser_and_stop')
+	    assert.match(prepared.command, /sloth.*d2c/)
+	    assert.equal(prepared.interceptorUrl, `http://localhost:3100/auth-page?token=sloth-d2c-test-token&fileKey=${designPrepare.fileKey}&nodeId=${designPrepare.nodeId}&mode=create`)
+	    assert.equal(prepared.codexBrowserOpen.url, prepared.interceptorUrl)
+	    assert.equal(prepared.codexBrowserOpen.urlSource, 'prepare-interceptor.codexHandoff.interceptorUrl')
+	    assert.deepEqual(prepared.forbidden, ['submit_interceptor', 'generate_code', 'poll_event', 'write_implementation_url'])
 	    const defaultGuide = await runCli([
 	      'workflow-guide',
 	      '--workspace',
@@ -367,6 +558,13 @@ async function main() {
 	    ])
 	    assert.equal(defaultGuide.guide[0].step, 'prepare-first-run')
 	    assert.equal(defaultGuide.guide[0].command, defaultHandoff.commands.prepareFirstRun)
+	    assert.equal(defaultGuide.codexBrowserOpen.enabled, true)
+	    assert.equal(defaultGuide.codexBrowserOpen.skill, defaultHandoff.codexBrowserOpen.skill)
+	    assert.equal(defaultGuide.codexBrowserOpen.target, defaultHandoff.codexBrowserOpen.target)
+	    assert.equal(defaultGuide.codexBrowserOpen.urlSource, defaultHandoff.codexBrowserOpen.urlSource)
+	    assert.equal(defaultGuide.guide[0].codexBrowserOpen.enabled, true)
+	    assert.equal(defaultGuide.guide[0].codexBrowserOpen.skill, defaultHandoff.codexBrowserOpen.skill)
+	    assert.match(defaultGuide.guide[0].codexBrowserOpen.url, /localhost:3100\/auth-page/)
 	    const silentHandoff = await runCli([
 	      'workflow-handoff',
 	      '--workspace',
@@ -383,6 +581,7 @@ async function main() {
 	    assert.equal(silentHandoff.commands.prepareFirstRun, null)
 	    assert.match(silentHandoff.commands.firstRun, /sloth.*d2c/)
 	    assert.match(silentHandoff.commands.firstRun, /--silent/)
+	    assert.equal(silentHandoff.codexBrowserOpen, null)
 	    assert.match(silentHandoff.recommendedAction, /Do not open the interceptor/)
 	    const silentGuide = await runCli([
 	      'workflow-guide',
