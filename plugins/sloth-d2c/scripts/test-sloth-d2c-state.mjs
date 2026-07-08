@@ -502,6 +502,8 @@ async function main() {
 	    assert.match(defaultHandoff.recommendedAction, /without opening Chrome or blocking for submit/)
 	    assert.equal(defaultHandoff.slothCli.available, true)
 	    assert.match(defaultHandoff.commands.openUrl, /localhost:3100\/auth-page/)
+	    assert.match(defaultHandoff.commands.openUrl, /supportSampling=1/)
+	    assert.match(defaultHandoff.commands.openUrl, /useBySkills=1/)
 	    assert.equal(defaultHandoff.commands.startWorkflowDev, null)
 	    assert.match(defaultHandoff.commands.prepareFirstRun, /sloth.*d2c/)
 	    assert.doesNotMatch(defaultHandoff.commands.prepareFirstRun, /SLOTH_CODEX_HANDOFF/)

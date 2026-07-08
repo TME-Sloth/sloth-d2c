@@ -601,6 +601,7 @@ function interceptorOpenUrlForSession(args, fileKey, nodeId) {
     token: workflowToken,
     mode: String(args.mode || 'create'),
     supportSampling: String(args['support-sampling'] || '1'),
+    useBySkills: workflowUseBySkills(args),
     supportRoots: String(args['support-roots'] || '1'),
     dataSource: String(args['data-source'] || 'local'),
     workspace: args.workspace,
@@ -1066,7 +1067,11 @@ function interceptorDataSource(args = {}) {
   return shouldUseLocalDesignData(args) ? 'local' : 'restful'
 }
 
-function buildInterceptorUrl({ host = 'localhost', port = '3100', fileKey, nodeId, token, mode = 'create', supportSampling = '1', supportRoots = '1', dataSource = 'restful', workspace }) {
+function workflowUseBySkills(args = {}) {
+  return args['use-by-skills'] === undefined ? '1' : String(args['use-by-skills'])
+}
+
+function buildInterceptorUrl({ host = 'localhost', port = '3100', fileKey, nodeId, token, mode = 'create', supportSampling = '1', supportRoots = '1', useBySkills = '', dataSource = 'restful', workspace }) {
   const url = new URL(`http://${host}:${port}/auth-page`)
   url.searchParams.set('token', token)
   url.searchParams.set('fileKey', fileKey)
@@ -1074,6 +1079,7 @@ function buildInterceptorUrl({ host = 'localhost', port = '3100', fileKey, nodeI
   url.searchParams.set('mode', mode)
   url.searchParams.set('supportSampling', supportSampling)
   url.searchParams.set('supportRoots', supportRoots)
+  if (useBySkills) url.searchParams.set('useBySkills', useBySkills)
   url.searchParams.set('dataSource', dataSource)
   if (workspace) url.searchParams.set('workspaceRoot', path.resolve(workspace))
   return url.toString()
@@ -1218,6 +1224,7 @@ async function workflowStatus(workspace, args, agentId) {
     token: workflowToken,
     mode: String(args.mode || 'create'),
     supportSampling: String(args['support-sampling'] || '1'),
+    useBySkills: workflowUseBySkills(args),
     supportRoots: String(args['support-roots'] || '1'),
     dataSource: interceptorDataSource(args),
     workspace,
@@ -1241,6 +1248,7 @@ async function workflowStatus(workspace, args, agentId) {
           token: workflowToken,
           mode: String(args.mode || 'create'),
           supportSampling: String(args['support-sampling'] || '1'),
+          useBySkills: workflowUseBySkills(args),
           supportRoots: String(args['support-roots'] || '1'),
           dataSource: interceptorDataSource(args),
         })),
@@ -1787,76 +1795,6 @@ async function screenshotInventory(workspace, fileKey, nodeId) {
   }
 }
 
-async function visualCompare(workspace, args) {
-  const selected = await resolveSession(workspace, args)
-  const fileKey = selected.fileKey
-  const nodeId = selected.nodeId
-  const screenshots = await screenshotInventory(workspace, fileKey, nodeId)
-  const baselinePath = resolveWorkspacePath(workspace, args.baseline) || screenshots.pageScreenshot?.path
-  const candidatePath = resolveWorkspacePath(workspace, args.candidate)
-  if (!baselinePath) throw new Error('Missing --baseline and no Sloth page screenshot was found.')
-  if (!candidatePath) throw new Error('Missing required --candidate')
-  if (!(await pathExists(baselinePath))) throw new Error(`Baseline image not found: ${baselinePath}`)
-  if (!(await pathExists(candidatePath))) throw new Error(`Candidate image not found: ${candidatePath}`)
-
-  const Jimp = requireWorkspacePackage(workspace, 'jimp')
-  const baseline = await Jimp.read(baselinePath)
-  const candidateOriginal = await Jimp.read(candidatePath)
-  const baselineSize = { width: baseline.bitmap.width, height: baseline.bitmap.height }
-  const candidateSize = { width: candidateOriginal.bitmap.width, height: candidateOriginal.bitmap.height }
-  const sizeMismatch = baselineSize.width !== candidateSize.width || baselineSize.height !== candidateSize.height
-  const candidateForDiff = sizeMismatch ? candidateOriginal.clone().resize(baselineSize.width, baselineSize.height) : candidateOriginal
-  const threshold = Number(args.threshold || 0.1)
-  const diffResult = Jimp.diff(baseline, candidateForDiff, threshold)
-  const mismatchPercent = Number(diffResult.percent || 0)
-  const mismatchRatio = Number(mismatchPercent.toFixed(6))
-  const label = String(args.label || 'visual-compare')
-  const idBase = cleanPart(`${label}_${Date.now()}`, 'visual_diff')
-  const outputDir = resolveWorkspacePath(workspace, args['output-dir']) || path.join(d2cDir(workspace, fileKey, nodeId), 'screenshots', 'diff')
-  await fs.mkdir(outputDir, { recursive: true })
-  const diffImagePath = path.join(outputDir, `${idBase}.png`)
-  await diffResult.image.writeAsync(diffImagePath)
-
-  const status = mismatchPercent <= threshold && !sizeMismatch ? 'matched' : 'needs-review'
-  const visualDiff = {
-    id: idBase,
-    type: 'visual',
-    status,
-    title: String(args.title || (status === 'matched' ? 'Visual match' : 'Visual difference')),
-    summary:
-      String(args.summary || '') ||
-      `${(mismatchPercent * 100).toFixed(2)}% pixels differ${sizeMismatch ? `; size ${candidateSize.width}x${candidateSize.height} vs ${baselineSize.width}x${baselineSize.height}` : ''}.`,
-    label,
-    baselinePath,
-    candidatePath,
-    diffImagePath,
-    mismatchPercent: mismatchRatio,
-    threshold,
-    sizeMismatch,
-    baselineSize,
-    candidateSize,
-    eventId: args['event-id'] && args['event-id'] !== true ? String(args['event-id']) : undefined,
-  }
-
-  return {
-    workspace,
-    selected: {
-      fileKey,
-      nodeId,
-      inferred: selected.inferred,
-      sessionId: sessionId(fileKey, nodeId),
-    },
-    visualDiff,
-    visualDiffs: [visualDiff],
-    visualDiffsJson: JSON.stringify([visualDiff]),
-    paths: {
-      baseline: baselinePath,
-      candidate: candidatePath,
-      diffImage: diffImagePath,
-    },
-  }
-}
-
 async function implementationScreenshotTarget(workspace, args) {
   const selected = await resolveSession(workspace, args)
   const fileKey = selected.fileKey
@@ -1867,22 +1805,6 @@ async function implementationScreenshotTarget(workspace, args) {
   const screenshotPath = resolveWorkspacePath(workspace, args.output) || path.join(outputDir, `${label}.png`)
   await fs.mkdir(path.dirname(screenshotPath), { recursive: true })
   const implementationUrl = args.url && args.url !== true ? String(args.url) : state.implementationUrl
-  const compareParts = [
-    'node',
-    scriptPath(),
-    'visual-compare',
-    '--workspace',
-    workspace,
-    '--file-key',
-    fileKey,
-    ...(nodeId ? ['--node-id', nodeId] : []),
-    '--candidate',
-    screenshotPath,
-    '--label',
-    label,
-    ...(args.threshold && args.threshold !== true ? ['--threshold', String(args.threshold)] : []),
-    ...(args['event-id'] && args['event-id'] !== true ? ['--event-id', String(args['event-id'])] : []),
-  ]
 
   return {
     workspace,
@@ -1894,16 +1816,13 @@ async function implementationScreenshotTarget(workspace, args) {
     },
     screenshotPath,
     implementationUrl,
-    commands: {
-      visualCompare: commandString(compareParts),
-    },
     browserRecipe: {
       url: implementationUrl || '<local implementation URL>',
       screenshotPath,
       steps: [
         'Do not navigate the Codex in-app browser away from the Sloth interceptor.',
         'Capture this URL with headless/local screenshot tooling, or skip the screenshot and report the validation gap if no headless capture is available.',
-        'Run commands.visualCompare and pass its visualDiffsJson to complete-event.',
+        'Review the design and implementation screenshots visually; do not use pixel-diff tooling.',
       ],
     },
   }
@@ -2084,24 +2003,6 @@ async function eventBrief(workspace, args, agentId) {
       'event-id': eventId,
     },
   )
-  const visualCompareCommand = [
-    'node',
-    shellQuote(scriptPath()),
-    'visual-compare',
-    '--workspace',
-    shellQuote(workspace),
-    '--file-key',
-    shellQuote(selected.fileKey),
-    ...(selected.nodeId ? ['--node-id', shellQuote(selected.nodeId)] : []),
-    '--baseline',
-    shellQuote(defaultBaseline),
-    '--candidate',
-    shellQuote('<local implementation screenshot path>'),
-    '--event-id',
-    shellQuote(eventId),
-    '--label',
-    shellQuote('figma-vs-implementation'),
-  ].join(' ')
   const claimEventCommand = [
     'node',
     shellQuote(scriptPath()),
@@ -2164,12 +2065,11 @@ async function eventBrief(workspace, args, agentId) {
       implementationScreenshot,
       instructions: [
         'Start from eventBrief.event, eventBrief.changedCanvasAnnotations, and eventBrief.groups. Do not rescan unrelated historical annotations unless this event requires it.',
-        'Use the shortest useful repair path. Do not capture screenshots or run visual-compare unless the event explicitly asks for visual fidelity or the code change cannot be checked otherwise.',
+        'Use the shortest useful repair path. Do not capture screenshots unless the event explicitly asks for visual fidelity or the code change cannot be checked otherwise.',
         'Edit the local implementation, run the narrowest useful checks, then write an agent result and acknowledge the handled event.',
       ],
       commands: {
         claimEvent: claimEventCommand,
-        visualCompare: visualCompareCommand,
         completeEvent: completeEventCommand,
       },
     },
@@ -2209,7 +2109,7 @@ async function annotationWorkflow(workspace, args, agentId) {
         'For small annotation fixes, skip claim-event and handle the event directly; use claim-event only before genuinely long-running work.',
         'Handle only eventBrief.changedCanvasAnnotations for this event. When target is implementation, treat coordinates as relative to the generated preview pane.',
         'Edit the local implementation until the submitted annotations are satisfied.',
-        'Run one narrow useful check. Do not capture screenshots or run design-diff/visual-compare for ordinary interaction, copy, spacing, or style fixes unless the annotation explicitly requires it.',
+        'Run one narrow useful check. Do not capture screenshots or run design-diff for ordinary interaction, copy, spacing, or style fixes unless the annotation explicitly requires visual fidelity review.',
         'Finish with complete-event so the interceptor can switch from Agent 生成中 to 已修改完成.',
       ],
       commands: brief.eventBrief.commands,
@@ -2239,19 +2139,20 @@ async function designDiff(workspace, args, agentId) {
   })
 
   if (args.candidate && args.candidate !== true) {
-    const comparison = await visualCompare(workspace, {
-      ...args,
-      'file-key': selected.fileKey,
-      'node-id': selected.nodeId,
-      baseline,
-      candidate: String(args.candidate),
-      label: args.label && args.label !== true ? String(args.label) : 'design-diff',
-    })
+    const candidate = resolveWorkspacePath(workspace, args.candidate)
+    if (!(await pathExists(baseline))) throw new Error(`Baseline image not found: ${baseline}`)
+    if (!candidate || !(await pathExists(candidate))) throw new Error(`Candidate image not found: ${candidate || String(args.candidate)}`)
     return {
-      mode: 'compared',
+      mode: 'ready-for-agent-visual-review',
       selected: status.selected,
       state: status.state,
-      comparison,
+      baseline,
+      candidate,
+      instructions: [
+        'Open or inspect the baseline and candidate screenshots directly.',
+        'Use agent visual review to list concrete layout, text, spacing, color, asset, crop, height, and interaction-state differences.',
+        'Do not run pixel-diff tooling.',
+      ],
     }
   }
 
@@ -2264,10 +2165,10 @@ async function designDiff(workspace, args, agentId) {
     implementationScreenshot: target,
     instructions: [
       'Do not open implementationScreenshot.implementationUrl in the Codex in-app browser; keep the in-app browser on the Sloth interceptor.',
-      'Capture implementationScreenshot.implementationUrl with headless/local screenshot tooling and save it to implementationScreenshot.screenshotPath.',
-      'Run implementationScreenshot.commands.visualCompare or call design-diff again with --candidate <screenshotPath>.',
-      'Use the diff image and mismatch ratio to edit the generated implementation, then repeat until the generated preview sufficiently matches the design.',
-      'When this command is part of a pending annotation event, pass the visualDiffs JSON to complete-event.',
+      'Capture implementationScreenshot.implementationUrl with headless/local screenshot tooling and save it to implementationScreenshot.screenshotPath; if a matching screenshot already exists under screenshots/implementation, reuse it.',
+      'Compare the baseline and implementation screenshots directly with agent visual review first. Note concrete layout, text, spacing, color, and asset differences.',
+      'Do not run pixel-diff tooling; record agent-reviewed visual findings in --diff-summary or --visual-diffs-json when completing an event.',
+      'When this command is part of a pending annotation event, pass the agent-reviewed visual findings to complete-event.',
     ],
     commands: {
       captureTarget: target,
@@ -2382,14 +2283,14 @@ async function workflowHandoff(workspace, args, agentId) {
       : 'Run commands.prepareFirstRun first. It runs sloth d2c in Codex handoff mode to prepare REST/local design data without opening Chrome or blocking for submit. Then open the returned codexHandoff.interceptorUrl in the Codex in-app browser, confirm it is visible, and end this Codex turn. Do not inspect controls and submit on the user’s behalf.',
     initial_generation_requested: skipInterceptor
       ? initialChunkStatus.needsSlothD2c
-        ? 'Before writing implementation code, run commands.rawSlothD2c or commands.generateChunks to refresh chunk prompts. Do not open the interceptor. After chunks/codeAggregation/finalGenerate exist, follow the chunk prompts in order (group chunks, then codeAggregation.md, then finalGenerate.md), create real project components/styles/assets, start the target app preview, and write implementationUrl if loop mode is still needed later. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.'
-        : 'Follow the existing Sloth D2C chunk prompts in order (group chunks, then codeAggregation.md, then finalGenerate.md) to generate real project components/styles/assets, start the target app preview, and write implementationUrl if loop mode is still needed later. Do not open the interceptor during first generation. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.'
+        ? 'Before writing implementation code, run commands.rawSlothD2c or commands.generateChunks to refresh chunk prompts. Do not open the interceptor. After chunks/codeAggregation/finalGenerate exist, follow the chunk prompts in order (group chunks, then codeAggregation.md, then finalGenerate.md), create real project components/styles/assets, start the target app preview, write implementationUrl if loop mode is still needed later, capture an implementation screenshot, and compare it against screenshots/index.png with agent visual review. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.'
+        : 'Follow the existing Sloth D2C chunk prompts in order (group chunks, then codeAggregation.md, then finalGenerate.md) to generate real project components/styles/assets, start the target app preview, write implementationUrl if loop mode is still needed later, capture an implementation screenshot, and compare it against screenshots/index.png with agent visual review. Do not open the interceptor during first generation. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.'
       : initialChunkStatus.needsSlothD2c
-      ? 'Before writing implementation code, run the sloth d2c atomic command to generate submitted group chunks/prompts. Do not hand-write the initial implementation from screenshots while chunks are missing. After chunks/codeAggregation/finalGenerate exist, claim the workflow.submitted event, follow the chunk prompts in order (group chunks, then codeAggregation.md, then finalGenerate.md), create real project components/styles/assets, start the target app preview, write implementationUrl, keep or reopen the Sloth interceptor in the Codex in-app browser, then complete the event. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.'
-      : 'Claim the workflow.submitted event, follow the existing Sloth D2C chunk prompts in order (group chunks, then codeAggregation.md, then finalGenerate.md) to generate real project components/styles/assets, start the target app preview, write implementationUrl, keep or reopen the Sloth interceptor in the Codex in-app browser, then complete the workflow.submitted event. Do not navigate the in-app browser directly to the target preview URL. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.',
+      ? 'Before writing implementation code, run the sloth d2c atomic command to generate submitted group chunks/prompts. Do not hand-write the initial implementation from screenshots while chunks are missing. After chunks/codeAggregation/finalGenerate exist, claim the workflow.submitted event, follow the chunk prompts in order (group chunks, then codeAggregation.md, then finalGenerate.md), create real project components/styles/assets, start the target app preview, write implementationUrl, capture an implementation screenshot, compare it against screenshots/index.png with agent visual review, keep or reopen the Sloth interceptor in the Codex in-app browser, then complete the event. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.'
+      : 'Claim the workflow.submitted event, follow the existing Sloth D2C chunk prompts in order (group chunks, then codeAggregation.md, then finalGenerate.md) to generate real project components/styles/assets, start the target app preview, write implementationUrl, capture an implementation screenshot, compare it against screenshots/index.png with agent visual review, keep or reopen the Sloth interceptor in the Codex in-app browser, then complete the workflow.submitted event. Do not navigate the in-app browser directly to the target preview URL. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.',
     initial_generating: skipInterceptor
-      ? 'Continue the silent first generation path until a reachable implementation preview URL is available, then write implementationUrl if loop mode is still needed later. Do not open the interceptor during first generation.'
-      : 'Continue the first generation path until a reachable implementation preview URL is available, then write implementationUrl so the interceptor can enter loop mode. Keep the Codex in-app browser on the Sloth interceptor.',
+      ? 'Continue the silent first generation path until a reachable implementation preview URL is available, then write implementationUrl if loop mode is still needed later, capture an implementation screenshot, and compare it against screenshots/index.png with agent visual review. Do not open the interceptor during first generation.'
+      : 'Continue the first generation path until a reachable implementation preview URL is available, then write implementationUrl so the interceptor can enter loop mode. Capture an implementation screenshot and compare it against screenshots/index.png with agent visual review. Keep the Codex in-app browser on the Sloth interceptor.',
     implementation_loop: 'Open the interceptor loop page and wait for the user to save generated-preview annotations.',
     implementation_annotations_requested: 'Handle the returned generated-preview annotation eventBrief, edit code, run checks, then run complete-event.',
     design_diff_requested: 'Handle the returned design diff eventBrief, compare the design and implementation, edit code, run checks, then run complete-event.',
@@ -2505,16 +2406,6 @@ async function workflowHandoff(workspace, args, agentId) {
         '<event-id>',
         '--summary',
         '<what Codex started handling>',
-      ]),
-      visualCompareTemplate: commandString([
-        'node',
-        scriptPath(),
-        'visual-compare',
-        ...baseArgs,
-        '--candidate',
-        '<local implementation screenshot path>',
-        '--label',
-        'figma-vs-implementation',
       ]),
       designDiff: commandString(['node', scriptPath(), 'design-diff', ...baseArgs, '--label', 'design-diff']),
       completeEventTemplate: commandString([
@@ -2737,8 +2628,8 @@ async function workflowGuide(workspace, args, agentId) {
         action: hasPendingEvent
           ? phase === 'initial_generation_requested'
             ? needsInitialChunks
-              ? 'Run sloth d2c first to generate chunks/prompts for the submitted groups, then claim the workflow.submitted event and generate the first implementation by following those prompts in order: group chunks, codeAggregation.md, then finalGenerate.md. Output real project components/styles/assets. Do not wrap absolute.html or raw HTML.'
-              : 'Claim the workflow.submitted event, then generate the first implementation by following existing Sloth D2C prompts in order: group chunks, codeAggregation.md, then finalGenerate.md. Output real project components/styles/assets. Do not wrap absolute.html or raw HTML.'
+              ? 'Run sloth d2c first to generate chunks/prompts for the submitted groups, then claim the workflow.submitted event and generate the first implementation by following those prompts in order: group chunks, codeAggregation.md, then finalGenerate.md. Output real project components/styles/assets. Do not wrap absolute.html or raw HTML. After the preview is reachable, capture an implementation screenshot and compare it against screenshots/index.png with agent visual review.'
+              : 'Claim the workflow.submitted event, then generate the first implementation by following existing Sloth D2C prompts in order: group chunks, codeAggregation.md, then finalGenerate.md. Output real project components/styles/assets. Do not wrap absolute.html or raw HTML. After the preview is reachable, capture an implementation screenshot and compare it against screenshots/index.png with agent visual review.'
             : 'Claim the returned pending event, then handle the eventBrief.'
           : isFirstRunWaiting
             ? skipInterceptor
@@ -2767,14 +2658,14 @@ async function workflowGuide(workspace, args, agentId) {
         status: hasPendingEvent ? 'pending-work' : isFirstRunWaiting ? 'not-started-until-user-submit' : 'blocked-until-event',
         action: phase === 'initial_generation_requested'
           ? needsInitialChunks
-            ? 'Do not inspect app code yet. First run sloth d2c and verify chunks/codeAggregation/finalGenerate exist. Then follow those generated prompts/chunks in order to create the initial implementation as normal project code. absolute.html is only a reference; do not embed it.'
-            : 'Use the submitted groups, annotations, screenshots, and Sloth-generated chunks/prompts in order to create the initial implementation as normal project code. Do not write implementationUrl until the target app preview is reachable. Keep the Codex in-app browser on the Sloth interceptor; do not navigate it to the target preview. absolute.html is only a reference; do not embed it.'
+            ? 'Do not inspect app code yet. First run sloth d2c and verify chunks/codeAggregation/finalGenerate exist. Then follow those generated prompts/chunks in order to create the initial implementation as normal project code. After the preview is reachable, write implementationUrl, capture the implementation screenshot, and visually compare it with screenshots/index.png. absolute.html is only a reference; do not embed it.'
+            : 'Use the submitted groups, annotations, screenshots, and Sloth-generated chunks/prompts in order to create the initial implementation as normal project code. Do not write implementationUrl until the target app preview is reachable. Then capture the implementation screenshot and visually compare it with screenshots/index.png. Keep the Codex in-app browser on the Sloth interceptor; do not navigate it to the target preview. absolute.html is only a reference; do not embed it.'
           : isFirstRunWaiting
             ? 'No code inspection yet. The first actionable context appears after workflow.submitted.'
             : 'Inspect the event brief, edit code, run one narrow useful check, and avoid visual diff unless explicitly needed.',
         command: hasPendingEvent ? handoff.commands.eventBrief : isFirstRunWaiting ? null : handoff.commands.eventBrief,
         doneWhen: phase === 'initial_generation_requested'
-          ? 'Initial code exists as real project components/styles/assets, it is not an absolute.html/raw HTML wrapper, the target app preview is running, implementationUrl has been written, and the Sloth interceptor is still the visible Codex browser surface.'
+          ? 'Initial code exists as real project components/styles/assets, it is not an absolute.html/raw HTML wrapper, the target app preview is running, implementationUrl has been written, an implementation screenshot is saved under screenshots/implementation, agent visual review against screenshots/index.png has been performed, and the Sloth interceptor is still the visible Codex browser surface.'
           : isFirstRunWaiting
             ? 'The user submits the first workflow and asks Codex to continue.'
           : hasPendingEvent
@@ -2921,6 +2812,7 @@ async function main() {
         token: workflowToken,
         mode: String(args.mode || 'create'),
         supportSampling: String(args['support-sampling'] || '1'),
+        useBySkills: workflowUseBySkills(args),
         supportRoots: String(args['support-roots'] || '1'),
         dataSource: interceptorDataSource(args),
         workspace,
@@ -2946,11 +2838,6 @@ async function main() {
 
   if (command === 'design-diff') {
     printJson(await designDiff(workspace, args, agentId))
-    return
-  }
-
-  if (command === 'visual-compare') {
-    printJson(await visualCompare(workspace, args))
     return
   }
 

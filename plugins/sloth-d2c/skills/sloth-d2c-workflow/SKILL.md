@@ -13,6 +13,8 @@ description: '用于通过 Sloth 拦截页、持久化 loop、快照和增量标
 
 当用户表达“打开拦截页/工作台、标注、调提示词、组件映射、把某个页面交给 Sloth”时，启动业务页面只是前置步骤，不是最终结果。若需要先启动 Vite/Next/静态服务，可以启动业务页面；拿到可访问的业务 URL 后继续运行 `open-interceptor --workspace <project-root> --url <implementation URL>`，再按返回的 `codexBrowserOpen` 打开 Codex 内置浏览器。若用户只是要求准备服务、检查 URL、生成可交给 Sloth 的上下文，或明确不打开浏览器，则可以只返回 `open-interceptor` 的结果和下一步命令，不强制打开页面。
 
+交互模式和 loop 阶段保持 Codex 内置浏览器停在 Sloth 拦截页。真实业务页 URL 只写入 loop state，用于一次性 headless/HTTP 校验；最终答复里不要贴本地 Vite URL 或 `implementationUrl`。如果需要给用户一个可打开入口，给 Sloth 拦截页入口即可。
+
 ## 自动打开与临时工作台
 
 当用户没有提供设计稿链接、`fileKey` 或 `nodeId`，但想“把拦截页跑起来”“调提示词”“做组件映射”“基于已有实现页继续标注/修复”时，优先运行 `open-interceptor`，不要要求用户补设计稿信息：
@@ -26,6 +28,8 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs open-interceptor \
 `open-interceptor` 会先扫描项目 `.sloth/**/loop/state.json`，尝试用 `implementationUrl` 自动找出现有设计会话；命中时返回 `resolution.mode: "resolved-design-session"`，并打开该会话的 Sloth 拦截页。如果没有命中，会创建内部 synthetic session（默认 `fileKey="__workbench__"`、`nodeId="tmp-..."` 或 `--session <name>`），写入最小 `absolute.html` / `groupsData.json` / loop state，并返回 `resolution.mode: "temporary-workbench"`。这表示此前实现可能不是通过 Sloth D2C 转码，但仍可以用拦截页做提示词、组件映射、实现页标注和后续 loop 操作。
 
 当 `open-interceptor` 返回 `ok: true` 和 `codexBrowserOpen.enabled === true`，且当前用户意图是打开或操作 Sloth 拦截页时，加载返回的 `codexBrowserOpen.skill`（通常是 `browser:control-in-app-browser`），显示 Codex 内置浏览器并导航到 `codexBrowserOpen.url`。如果当前意图只是准备/检查，不要强行打开；简短汇报拦截页 URL 已准备好和下一步命令即可。不要把 Codex 内置浏览器导航到业务实现页。
+
+如果需要在最终答复中提供一个可打开入口，只提供 `codexBrowserOpen.url` 或 `interceptorUrl` 对应的 Sloth 拦截页入口；不要同时提供业务实现 URL。
 
 如果 `open-interceptor` 返回 `action: "ask_user_intent"`，说明既没有推断出设计会话，也没有找到可打开的实现页面。此时不要继续猜、不要创建空 workbench；问用户一个问题：“你是要转代码，还是打开拦截页做标注/调提示词？转代码需要 Figma 链接或 Figma 插件里的 fileKey/nodeId；打开拦截页需要项目目录和要标注的页面 URL。” 用户选择转代码后，走正常 `prepare-interceptor` / D2C 流程；用户选择打开拦截页后，要求其提供项目目录和页面 URL，再重新运行 `open-interceptor --workspace <project-root> --url <implementation URL>`。
 
@@ -123,6 +127,8 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs workflow-handoff \
 
 Codex 内置浏览器应保持在 Sloth 拦截页，避免把用户的 Sloth 拦截页覆盖成真实实现页或本地 Vite/预览 URL。实现页的技术验证不要依赖读取 Sloth 外层 DOM、iframe 包装对象或手动改 iframe `src`；这些只证明拦截页包装层，不证明真实实现。
 
+最终答复同样要保持这个边界：交互模式和 loop 阶段不要输出裸 `localhost`/`127.0.0.1` 业务预览地址，也不要用 Markdown 链接指向业务实现页。若必须说明真实页状态，只写“真实预览已写入 Sloth 拦截页/loop state 并通过校验”，不要附 URL。
+
 写入 `implementationUrl` 后，验证真实预览时直接访问 `implementationUrl`，但不要通过 Codex 内置浏览器或会复用当前 Codex 页面状态的 Browser/Chrome 工具访问：
 
 - 改用 Playwright/Puppeteer 的一次性独立浏览器进程、HTTP smoke check、测试框架或目标项目已有 e2e/smoke 脚本。
@@ -151,8 +157,10 @@ Codex 内置浏览器应保持在 Sloth 拦截页，避免把用户的 Sloth 拦
 5. 主 agent 汇总 subagent 输出，再逐条消费 `codeAggregation.md` 和 `finalGenerate.md` 生成或更新目标实现，匹配旧版 group chunk -> aggregation -> final prompt -> final write 流程。
 6. 启动或识别目标应用预览。技术 smoke check 应直接访问真实预览 URL，但使用一次性 Playwright/Puppeteer/headless 浏览器、HTTP smoke check 或项目测试脚本，不要覆盖 Codex 内置浏览器里的 Sloth 拦截页。
 7. 写入 `implementationUrl`。这一步才开始 loop 状态，用于后续生成稿标注、diff 和修复事件。
-8. 交互模式下，重新打开或保持 Sloth 拦截页在 Codex 内置浏览器中，通过拦截页查看生成预览和接收用户标注。无拦截页模式的首次生成跳过此步。
-9. 运行聚焦校验；真实实现的可访问性/交互/状态变化应在 `implementationUrl` 上验证。交互模式或 loop 阶段才用 Sloth 拦截页验证工作流容器和标注入口。
+8. 首次实现转码后做截图 diff 验收：运行 `commands.implementationScreenshotTarget` 获取实现截图保存路径，使用一次性 Playwright/Puppeteer/headless 浏览器按设计截图宽度和完整页面高度捕获 `implementationUrl`，保存到 `.sloth/<fileKey>/<nodeId>/screenshots/implementation/`。然后直接对比 `.sloth/<fileKey>/<nodeId>/screenshots/index.png` 和实现截图，由 agent 分段视觉审查首屏、核心卡片、列表、底部模块、文字、颜色、间距、图片裁剪和页面高度。不要运行像素级 diff 工具。
+9. 根据 agent 视觉差异修复目标实现代码，重新截图复核，直到没有明显结构/文本/尺寸/裁剪/高度问题，或清楚记录剩余低优先级差异。
+10. 交互模式下，重新打开或保持 Sloth 拦截页在 Codex 内置浏览器中，通过拦截页查看生成预览和接收用户标注。无拦截页模式的首次生成跳过此步。
+11. 运行聚焦校验；真实实现的可访问性/交互/状态变化应在 `implementationUrl` 上验证。交互模式或 loop 阶段才用 Sloth 拦截页验证工作流容器和标注入口。
 
 必需的 chunks/prompts 缺失时，不要仅凭截图手写首次实现。
 
@@ -181,4 +189,6 @@ Codex 内置浏览器应保持在 Sloth 拦截页，避免把用户的 Sloth 拦
 
 ## 收尾
 
-报告当前阶段、`interceptorMode`、拦截页是否已打开（静默首次生成应报告未打开）、已处理事件 id、chunk 处理方式（subagent 并行或主 agent 直接处理）、`implementationUrl` 状态、变更文件和已运行校验。交互模式下 `design_prepare` 阶段，只需报告页面已打开并等待用户提交。
+报告当前阶段、`interceptorMode`、拦截页是否已打开（静默首次生成应报告未打开）、已处理事件 id、chunk 处理方式（subagent 并行或主 agent 直接处理）、`implementationUrl` 是否已写入、变更文件和已运行校验。交互模式下 `design_prepare` 阶段，只需报告页面已打开并等待用户提交。
+
+交互模式和 loop 阶段的收尾不要贴真实实现 URL 或本地 Vite URL。若要给用户一个可打开入口，只给 Sloth 拦截页 URL，并确认 Codex 内置浏览器已停在该拦截页。
