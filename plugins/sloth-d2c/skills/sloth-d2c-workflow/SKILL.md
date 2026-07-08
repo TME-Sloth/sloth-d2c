@@ -109,6 +109,8 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs workflow-handoff \
 
 对于有分组的提交，有效 chunk 输出应包含一个或多个 group chunk 文件，例如 `0.md`、`1.md` 等，并且包含 `codeAggregation.md` 和 `finalGenerate.md`。当提交中存在分组时，只有 `codeAggregation.md` 和 `finalGenerate.md` 不够。首次实现代码开始前，必须先运行 chunk 生成并检查预期的 chunk 结构。
 
+如果用户在 Skill/拦截页路径启用了“自动分组 / AI 分组”，并出现 `autoGroupingHandoff.requiresAutoGrouping=true`、`autoGrouping.md` 或 `autoGrouping.meta.json`，不要把自动分组细节写在本 workflow 里，也不要把 `autoGrouping.md` 全量读入主上下文。直接派一个聚焦 subagent 使用 `$sloth-d2c-auto-grouping` 读取 promptPath 并写入 `groupsData.json`；主 agent 只重新读取本地 `groupsData.json` 确认结果。拦截页按钮路径会轮询该文件并自动反填；静默首次生成路径则在文件写入后继续运行 `autoGroupingHandoff.rerunCommand` 生成 chunks。
+
 有分组 chunk 时，建议把 chunk 转码工作拆给 subagents：每个 subagent 只处理一个或一小组独立的 group chunk，返回组件代码、依赖资源、样式要点和风险。这样更接近旧 skill 的并行 chunk 处理方式，也能减少主 agent 串行读取所有 chunks 后独自转码的风险。一般最多同时派发 6 个 subagents；group chunks 多于 6 个时可分批派发。若当前运行环境没有可用 subagent 能力，或任务规模很小，也可以由主 agent 直接处理，并在收尾说明采用了哪种路径。
 
 实现必须遵循 chunks 里的提示词，而不是只把 chunks 当参考资料扫一眼。处理顺序是：先按每个 group chunk（如 `0.md`、`1.md`）生成对应模块/组件，再按 `codeAggregation.md` 组织组件关系、数据流和依赖，最后按 `finalGenerate.md` 完成最终页面写入、样式整合和验收要求。不要跳过、改写或选择性忽略 chunk prompt 中的约束；如果 chunk prompt 和个人判断冲突，优先说明冲突并按 prompt 约束实现。

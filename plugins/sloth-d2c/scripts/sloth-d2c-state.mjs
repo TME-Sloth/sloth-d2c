@@ -1063,6 +1063,10 @@ function shouldSkipInterceptor(args = {}) {
   return args.silent === true || args.silent === 'true'
 }
 
+function shouldUseAutoGrouping(args = {}) {
+  return args['auto-grouping'] === true || args['auto-grouping'] === 'true' || args.autoGrouping === true || args.autoGrouping === 'true'
+}
+
 function interceptorDataSource(args = {}) {
   return shouldUseLocalDesignData(args) ? 'local' : 'restful'
 }
@@ -1215,6 +1219,7 @@ async function workflowStatus(workspace, args, agentId) {
   const actionablePendingEvents = pending.events.filter(isActionableWorkflowEvent)
   const workflowPhase = deriveWorkflowPhase(state, events, actionablePendingEvents)
   const chunks = await listChunks(workspace, fileKey, nodeId)
+  const autoGrouping = await readAutoGroupingHandoff(workspace, fileKey, nodeId)
   const workflowToken = createWorkflowToken(args)
   const interceptorUrl = buildInterceptorUrl({
     host: String(args.host || 'localhost'),
@@ -1292,6 +1297,7 @@ async function workflowStatus(workspace, args, agentId) {
     allPendingEvents: pending.events,
     d2cDir: d2cDir(workspace, fileKey, nodeId),
     chunks,
+    autoGrouping,
     sessions: selected.sessions,
   }
 }
@@ -1554,6 +1560,42 @@ async function listChunks(workspace, fileKey, nodeId) {
   }
 }
 
+async function readAutoGroupingHandoff(workspace, fileKey, nodeId) {
+  const dir = d2cDir(workspace, fileKey, nodeId)
+  const promptPath = path.join(dir, 'autoGrouping.md')
+  const metaPath = path.join(dir, 'autoGrouping.meta.json')
+  const groupsDataPath = path.join(dir, 'groupsData.json')
+  const meta = await readJson(metaPath, null)
+  const groupsData = await readJson(groupsDataPath, [])
+  const promptExists = await pathExists(promptPath)
+  const groupsDataExists = Array.isArray(groupsData) && groupsData.length > 0
+  let groupsDataFresh = groupsDataExists
+  if (groupsDataExists && meta?.generatedAt) {
+    try {
+      const groupsDataStat = await fs.stat(groupsDataPath)
+      const requestedAtMs = Date.parse(meta.generatedAt)
+      groupsDataFresh = !Number.isFinite(requestedAtMs) || groupsDataStat.mtimeMs + 1000 >= requestedAtMs
+    } catch {
+      groupsDataFresh = false
+    }
+  }
+
+  return {
+    enabled: Boolean(meta || promptExists),
+    requiresAutoGrouping: Boolean((meta || promptExists) && !groupsDataFresh),
+    promptPath: meta?.promptPath || (promptExists ? promptPath : null),
+    promptRelativePath: meta?.promptRelativePath || null,
+    metaPath: meta ? metaPath : null,
+    groupsDataPath: meta?.groupsDataPath || groupsDataPath,
+    groupsDataRelativePath: meta?.groupsDataRelativePath || null,
+    screenshotPath: meta?.screenshotPath || null,
+    rerunCommand: meta?.rerunCommand || null,
+    groupsDataExists: groupsDataFresh,
+    staleGroupsDataExists: groupsDataExists && !groupsDataFresh,
+    groupCount: groupsDataFresh ? groupsData.length : 0,
+  }
+}
+
 function isGroupChunkFileName(name) {
   const normalized = String(name || '').toLowerCase()
   if (!normalized.endsWith('.md')) return false
@@ -1587,6 +1629,7 @@ function buildSlothD2cArgs(fileKey, nodeId, framework = 'react', args = {}) {
     '--framework',
     framework || 'react',
     ...(shouldUseLocalDesignData(args) ? ['--local'] : []),
+    ...(shouldUseAutoGrouping(args) ? ['--auto-grouping'] : []),
     '--silent',
     '--json',
   ]
@@ -1601,6 +1644,7 @@ function buildSlothD2cHandoffArgs(fileKey, nodeId, framework = 'react', args = {
     '--framework',
     framework || 'react',
     ...(shouldUseLocalDesignData(args) ? ['--local'] : []),
+    ...(shouldUseAutoGrouping(args) ? ['--auto-grouping'] : []),
     '--json',
   ]
 }
@@ -1737,9 +1781,10 @@ async function ensureInitialChunks(workspace, args, agentId) {
   const context = eventId ? await eventContext(workspace, fileKey, nodeId, eventId) : null
   const expectedGroupCount = Array.isArray(context?.groups) && context.groups.length ? context.groups.length : context?.snapshot?.groupCount || 0
   const before = summarizeChunkGeneration(status.chunks, expectedGroupCount)
+  const autoGroupingBefore = await readAutoGroupingHandoff(workspace, fileKey, nodeId)
   const force = Boolean(args.force)
 
-  if (!before.needsSlothD2c && !force) {
+  if (!before.needsSlothD2c && !force && !autoGroupingBefore.requiresAutoGrouping) {
     return {
       workspace,
       selected,
@@ -1748,12 +1793,15 @@ async function ensureInitialChunks(workspace, args, agentId) {
       reason: 'chunks already complete',
       before,
       after: before,
+      autoGrouping: autoGroupingBefore,
     }
   }
 
   const run = await runSlothD2cAtomicCommand(workspace, fileKey, nodeId, String(args.framework || 'react'), args)
   const afterChunks = await listChunks(workspace, fileKey, nodeId)
   const after = summarizeChunkGeneration(afterChunks, expectedGroupCount)
+  const autoGroupingAfter = await readAutoGroupingHandoff(workspace, fileKey, nodeId)
+  const parsedRunOutput = parseJsonCommandOutput(run.stdout)
 
   return {
     workspace,
@@ -1767,6 +1815,7 @@ async function ensureInitialChunks(workspace, args, agentId) {
     stdout: run.stdout,
     stderr: run.stderr,
     attempts: run.attempts,
+    autoGrouping: parsedRunOutput?.autoGroupingHandoff || autoGroupingAfter,
   }
 }
 
@@ -2252,6 +2301,7 @@ async function workflowHandoff(workspace, args, agentId) {
       ? firstBrief.groups.length
       : firstBrief?.snapshot?.groupCount || 0
   const initialChunkStatus = summarizeChunkGeneration(status.chunks, submittedGroupCount)
+  const autoGroupingStatus = status.autoGrouping || { requiresAutoGrouping: false }
   const generateChunksCommand = commandString([
     'node',
     scriptPath(),
@@ -2260,6 +2310,7 @@ async function workflowHandoff(workspace, args, agentId) {
     '--framework',
     String(args.framework || 'react'),
     ...(args.local === true || args.local === 'true' ? ['--local'] : []),
+    ...(shouldUseAutoGrouping(args) ? ['--auto-grouping'] : []),
     '--prefer-repo-cli',
   ])
   const prepareFirstRunCommand = commandString([
@@ -2296,7 +2347,11 @@ async function workflowHandoff(workspace, args, agentId) {
     design_diff_requested: 'Handle the returned design diff eventBrief, compare the design and implementation, edit code, run checks, then run complete-event.',
     legacy_repair_requested: 'Handle the returned legacy repair eventBrief, edit code, run checks, then run complete-event.',
   }
+  const autoGroupingRecommendedAction = autoGroupingStatus.requiresAutoGrouping
+    ? `Before generating chunks or implementation code, dispatch a focused subagent to read ${autoGroupingStatus.promptPath} and write ${autoGroupingStatus.groupsDataPath}. After it validates groupsData.json, rerun ${autoGroupingStatus.rerunCommand || 'commands.rawSlothD2c'} to generate grouped chunks, then follow group chunks, codeAggregation.md, and finalGenerate.md in order. Keep the auto-grouping prompt out of the main context except for the final groupsData summary.`
+    : null
   const phaseRecommendedAction =
+    autoGroupingRecommendedAction ||
     recommendedActionByPhase[phase] ||
     (firstPending
       ? 'Handle the returned eventBrief, edit code, run checks, then run complete-event.'
@@ -2323,7 +2378,9 @@ async function workflowHandoff(workspace, args, agentId) {
     repairBrief: firstBrief,
     initialGeneration: {
       chunkStatus: initialChunkStatus,
-      mustRunSlothD2cBeforeCoding: phase === 'initial_generation_requested' && initialChunkStatus.needsSlothD2c,
+      autoGrouping: autoGroupingStatus,
+      mustRunAutoGroupingBeforeChunks: Boolean(autoGroupingStatus.requiresAutoGrouping),
+      mustRunSlothD2cBeforeCoding: phase === 'initial_generation_requested' && initialChunkStatus.needsSlothD2c && !autoGroupingStatus.requiresAutoGrouping,
     },
     codexBrowserOpen,
     codexTokenBridge,

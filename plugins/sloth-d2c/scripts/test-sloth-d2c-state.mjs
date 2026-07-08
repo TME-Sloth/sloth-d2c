@@ -519,7 +519,22 @@ async function main() {
 	    assert.equal(defaultHandoff.codexBrowserOpen.afterOpen, 'return-to-user')
 	    assert.match(defaultHandoff.commands.rawSlothD2c, /sloth.*d2c/)
 	    assert.match(defaultHandoff.commands.rawSlothD2c, /--silent/)
+	    assert.doesNotMatch(defaultHandoff.commands.rawSlothD2c, /--auto-grouping/)
 	    assert.deepEqual(defaultHandoff.warnings, [])
+	    const autoGroupingHandoff = await runCli([
+	      'workflow-handoff',
+	      '--workspace',
+	      designPrepare.workspace,
+	      '--file-key',
+	      designPrepare.fileKey,
+	      '--node-id',
+	      designPrepare.nodeId,
+	      '--agent-id',
+	      'codex',
+	      '--auto-grouping',
+	    ])
+	    assert.match(autoGroupingHandoff.commands.rawSlothD2c, /--auto-grouping/)
+	    assert.match(autoGroupingHandoff.commands.generateChunks, /--auto-grouping/)
 	    const fakeSlothBin = await createFakeSlothBin()
 	    const prepared = await runCli(
 	      [
