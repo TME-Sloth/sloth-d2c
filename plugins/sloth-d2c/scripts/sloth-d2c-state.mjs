@@ -85,6 +85,21 @@ function d2cDir(workspace, fileKey, nodeId) {
   return path.join(workspace, '.sloth', cleanPart(fileKey, 'file'), cleanPart(nodeId, 'root'))
 }
 
+function submissionPath(workspace, fileKey, nodeId) {
+  return path.join(d2cDir(workspace, fileKey, nodeId), 'submission.json')
+}
+
+async function readSubmission(workspace, fileKey, nodeId) {
+  const markerPath = submissionPath(workspace, fileKey, nodeId)
+  const marker = await readJson(markerPath, null)
+  return marker
+    ? {
+        ...marker,
+        path: markerPath,
+      }
+    : null
+}
+
 function isWorkbenchFileKey(fileKey) {
   return cleanPart(fileKey, 'file') === '__workbench__'
 }
@@ -966,7 +981,7 @@ function isActionableWorkflowEvent(event) {
   return ['workflow.submitted', 'annotation.submitted', 'diff.confirmed', 'repair.requested'].includes(event?.type)
 }
 
-function deriveWorkflowPhase(state, events, pendingEvents) {
+function deriveWorkflowPhase(state, events, pendingEvents, submission = null) {
   const hasImplementation = Boolean(state?.implementationUrl)
   const hasWorkflowSubmitted = events.some((event) => event.type === 'workflow.submitted')
   const pendingWorkflowSubmit = pendingEvents.find((event) => event.type === 'workflow.submitted')
@@ -983,6 +998,14 @@ function deriveWorkflowPhase(state, events, pendingEvents) {
         description: 'The user submitted the first-pass design configuration. Codex should generate code before writing implementationUrl.',
       }
     }
+    if (submission?.status === 'submitted') {
+      return {
+        phase: 'initial_generation_requested',
+        waitingFor: 'codex-initial-generation',
+        submissionPath: submission.path,
+        description: 'The user submitted the first-pass design configuration. Codex should generate code before writing implementationUrl.',
+      }
+    }
     if (hasWorkflowSubmitted) {
       return {
         phase: 'initial_generating',
@@ -992,7 +1015,7 @@ function deriveWorkflowPhase(state, events, pendingEvents) {
     }
     return {
       phase: 'design_prepare',
-      waitingFor: 'workflow.submitted',
+      waitingFor: 'submission.json',
       description: 'Open the interceptor on the design preview and wait for the user to finish first-pass grouping/annotations and submit.',
     }
   }
@@ -1216,8 +1239,9 @@ async function workflowStatus(workspace, args, agentId) {
   const pending = await getPendingEvents(workspace, fileKey, nodeId, agentId, args.source ? String(args.source) : 'human')
   const state = await getState(workspace, fileKey, nodeId)
   const events = await readJsonl(path.join(loopDir(workspace, fileKey, nodeId), 'events.jsonl'))
+  const submission = await readSubmission(workspace, fileKey, nodeId)
   const actionablePendingEvents = pending.events.filter(isActionableWorkflowEvent)
-  const workflowPhase = deriveWorkflowPhase(state, events, actionablePendingEvents)
+  const workflowPhase = deriveWorkflowPhase(state, events, actionablePendingEvents, submission)
   const chunks = await listChunks(workspace, fileKey, nodeId)
   const autoGrouping = await readAutoGroupingHandoff(workspace, fileKey, nodeId)
   const workflowToken = createWorkflowToken(args)
@@ -1292,6 +1316,7 @@ async function workflowStatus(workspace, args, agentId) {
       },
     },
     state,
+    submission,
     workflowPhase,
     pendingEvents: actionablePendingEvents,
     allPendingEvents: pending.events,
@@ -1562,34 +1587,49 @@ async function listChunks(workspace, fileKey, nodeId) {
 
 async function readAutoGroupingHandoff(workspace, fileKey, nodeId) {
   const dir = d2cDir(workspace, fileKey, nodeId)
-  const promptPath = path.join(dir, 'autoGrouping.md')
-  const metaPath = path.join(dir, 'autoGrouping.meta.json')
+  const tasksDir = path.join(dir, 'tasks')
   const groupsDataPath = path.join(dir, 'groupsData.json')
-  const meta = await readJson(metaPath, null)
   const groupsData = await readJson(groupsDataPath, [])
-  const promptExists = await pathExists(promptPath)
+  let task = null
+  try {
+    const entries = await fs.readdir(tasksDir, { withFileTypes: true })
+    const taskStats = await Promise.all(
+      entries
+        .filter((entry) => entry.isFile() && entry.name.startsWith('subAgentTask-autoGrouping-') && entry.name.endsWith('.md'))
+        .map(async (entry) => {
+          const taskPath = path.join(tasksDir, entry.name)
+          const stat = await fs.stat(taskPath)
+          return {
+            taskPath,
+            taskRelativePath: path.relative(workspace, taskPath),
+            mtimeMs: stat.mtimeMs,
+          }
+        }),
+    )
+    task = taskStats.sort((a, b) => b.mtimeMs - a.mtimeMs)[0] || null
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error
+  }
   const groupsDataExists = Array.isArray(groupsData) && groupsData.length > 0
   let groupsDataFresh = groupsDataExists
-  if (groupsDataExists && meta?.generatedAt) {
+  if (groupsDataExists && task?.mtimeMs) {
     try {
       const groupsDataStat = await fs.stat(groupsDataPath)
-      const requestedAtMs = Date.parse(meta.generatedAt)
-      groupsDataFresh = !Number.isFinite(requestedAtMs) || groupsDataStat.mtimeMs + 1000 >= requestedAtMs
+      groupsDataFresh = groupsDataStat.mtimeMs + 1000 >= task.mtimeMs
     } catch {
       groupsDataFresh = false
     }
   }
 
   return {
-    enabled: Boolean(meta || promptExists),
-    requiresAutoGrouping: Boolean((meta || promptExists) && !groupsDataFresh),
-    promptPath: meta?.promptPath || (promptExists ? promptPath : null),
-    promptRelativePath: meta?.promptRelativePath || null,
-    metaPath: meta ? metaPath : null,
-    groupsDataPath: meta?.groupsDataPath || groupsDataPath,
-    groupsDataRelativePath: meta?.groupsDataRelativePath || null,
-    screenshotPath: meta?.screenshotPath || null,
-    rerunCommand: meta?.rerunCommand || null,
+    enabled: Boolean(task),
+    requiresAutoGrouping: Boolean(task && !groupsDataFresh),
+    taskPath: task?.taskPath || null,
+    taskRelativePath: task?.taskRelativePath || null,
+    groupsDataPath,
+    groupsDataRelativePath: path.relative(workspace, groupsDataPath),
+    screenshotPath: null,
+    rerunCommand: null,
     groupsDataExists: groupsDataFresh,
     staleGroupsDataExists: groupsDataExists && !groupsDataFresh,
     groupCount: groupsDataFresh ? groupsData.length : 0,
@@ -2299,7 +2339,7 @@ async function workflowHandoff(workspace, args, agentId) {
   const submittedGroupCount =
     firstBrief && Array.isArray(firstBrief.groups)
       ? firstBrief.groups.length
-      : firstBrief?.snapshot?.groupCount || 0
+      : firstBrief?.snapshot?.groupCount || status.submission?.groupCount || 0
   const initialChunkStatus = summarizeChunkGeneration(status.chunks, submittedGroupCount)
   const autoGroupingStatus = status.autoGrouping || { requiresAutoGrouping: false }
   const generateChunksCommand = commandString([
@@ -2328,7 +2368,7 @@ async function workflowHandoff(workspace, args, agentId) {
   ])
   const recommendedActionByPhase = {
     design_prepare: skipInterceptor
-      ? 'Run commands.rawSlothD2c (or commands.generateChunks when chunks are incomplete) to fetch design data and generate chunk prompts silently. Do not open the interceptor or wait for workflow.submitted. After chunks/codeAggregation/finalGenerate exist, continue directly to first implementation generation in the same turn.'
+      ? 'Run commands.rawSlothD2c (or commands.generateChunks when chunks are incomplete) to fetch design data and generate chunk prompts silently. Do not open the interceptor or wait for submission.json. After chunks/codeAggregation/finalGenerate exist, continue directly to first implementation generation in the same turn.'
       : shouldStartDevInterceptor
       ? 'Start the Sloth workflow dev launcher, rerun workflow-handoff, then run commands.prepareFirstRun. Open the returned codexHandoff.interceptorUrl in the Codex in-app browser and end this Codex turn. Do not click Submit/Generate or trigger the form for the user. Use shell open/system default browser/Chrome only if the Codex in-app browser is unavailable or control fails.'
       : 'Run commands.prepareFirstRun first. It runs sloth d2c in Codex handoff mode to prepare REST/local design data without opening Chrome or blocking for submit. Then open the returned codexHandoff.interceptorUrl in the Codex in-app browser, confirm it is visible, and end this Codex turn. Do not inspect controls and submit on the user’s behalf.',
@@ -2337,8 +2377,8 @@ async function workflowHandoff(workspace, args, agentId) {
         ? 'Before writing implementation code, run commands.rawSlothD2c or commands.generateChunks to refresh chunk prompts. Do not open the interceptor. After chunks/codeAggregation/finalGenerate exist, follow the chunk prompts in order (group chunks, then codeAggregation.md, then finalGenerate.md), create real project components/styles/assets, start the target app preview, write implementationUrl if loop mode is still needed later, capture an implementation screenshot, and compare it against screenshots/index.png with agent visual review. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.'
         : 'Follow the existing Sloth D2C chunk prompts in order (group chunks, then codeAggregation.md, then finalGenerate.md) to generate real project components/styles/assets, start the target app preview, write implementationUrl if loop mode is still needed later, capture an implementation screenshot, and compare it against screenshots/index.png with agent visual review. Do not open the interceptor during first generation. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.'
       : initialChunkStatus.needsSlothD2c
-      ? 'Before writing implementation code, run the sloth d2c atomic command to generate submitted group chunks/prompts. Do not hand-write the initial implementation from screenshots while chunks are missing. After chunks/codeAggregation/finalGenerate exist, claim the workflow.submitted event, follow the chunk prompts in order (group chunks, then codeAggregation.md, then finalGenerate.md), create real project components/styles/assets, start the target app preview, write implementationUrl, capture an implementation screenshot, compare it against screenshots/index.png with agent visual review, keep or reopen the Sloth interceptor in the Codex in-app browser, then complete the event. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.'
-      : 'Claim the workflow.submitted event, follow the existing Sloth D2C chunk prompts in order (group chunks, then codeAggregation.md, then finalGenerate.md) to generate real project components/styles/assets, start the target app preview, write implementationUrl, capture an implementation screenshot, compare it against screenshots/index.png with agent visual review, keep or reopen the Sloth interceptor in the Codex in-app browser, then complete the workflow.submitted event. Do not navigate the in-app browser directly to the target preview URL. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.',
+      ? 'Before writing implementation code, use submission.json as the first-run gate and run the sloth d2c atomic command to generate chunks/prompts from the submitted configuration. Do not hand-write the initial implementation from screenshots while chunks are missing. After chunks/codeAggregation/finalGenerate exist, follow the chunk prompts in order (group chunks, then codeAggregation.md, then finalGenerate.md), create real project components/styles/assets, start the target app preview, write implementationUrl, capture an implementation screenshot, compare it against screenshots/index.png with agent visual review, and keep or reopen the Sloth interceptor in the Codex in-app browser. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.'
+      : 'Use submission.json as the first-run gate, then follow the existing Sloth D2C chunk prompts in order (group chunks, then codeAggregation.md, then finalGenerate.md) to generate real project components/styles/assets, start the target app preview, write implementationUrl, capture an implementation screenshot, compare it against screenshots/index.png with agent visual review, and keep or reopen the Sloth interceptor in the Codex in-app browser. Do not navigate the in-app browser directly to the target preview URL. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.',
     initial_generating: skipInterceptor
       ? 'Continue the silent first generation path until a reachable implementation preview URL is available, then write implementationUrl if loop mode is still needed later, capture an implementation screenshot, and compare it against screenshots/index.png with agent visual review. Do not open the interceptor during first generation.'
       : 'Continue the first generation path until a reachable implementation preview URL is available, then write implementationUrl so the interceptor can enter loop mode. Capture an implementation screenshot and compare it against screenshots/index.png with agent visual review. Keep the Codex in-app browser on the Sloth interceptor.',
@@ -2348,7 +2388,7 @@ async function workflowHandoff(workspace, args, agentId) {
     legacy_repair_requested: 'Handle the returned legacy repair eventBrief, edit code, run checks, then run complete-event.',
   }
   const autoGroupingRecommendedAction = autoGroupingStatus.requiresAutoGrouping
-    ? `Before generating chunks or implementation code, dispatch a focused subagent to read ${autoGroupingStatus.promptPath} and write ${autoGroupingStatus.groupsDataPath}. After it validates groupsData.json, rerun ${autoGroupingStatus.rerunCommand || 'commands.rawSlothD2c'} to generate grouped chunks, then follow group chunks, codeAggregation.md, and finalGenerate.md in order. Keep the auto-grouping prompt out of the main context except for the final groupsData summary.`
+    ? `Before generating chunks or implementation code, dispatch a focused subagent to read ${autoGroupingStatus.taskPath} and write ${autoGroupingStatus.groupsDataPath}. After it validates groupsData.json, rerun ${autoGroupingStatus.rerunCommand || 'commands.rawSlothD2c'} to generate grouped chunks, then follow group chunks, codeAggregation.md, and finalGenerate.md in order. Keep the auto-grouping task body out of the main context except for the final groupsData summary.`
     : null
   const phaseRecommendedAction =
     autoGroupingRecommendedAction ||
@@ -2389,7 +2429,7 @@ async function workflowHandoff(workspace, args, agentId) {
       : phase === 'design_prepare'
         ? skipInterceptor
           ? 'Do not open the interceptor. Stop only after chunks/codeAggregation/finalGenerate exist and first implementation generation has started or completed.'
-          : 'Stop after commands.prepareFirstRun returns a codexHandoff.interceptorUrl and that URL is opened in the Codex in-app browser. Do not click Submit/Generate, do not use DOM selectors or coordinates to submit, and do not start chunks/code generation. Resume only when the user asks Codex to continue after submitting the first workflow.'
+          : 'Stop after commands.prepareFirstRun returns a codexHandoff.interceptorUrl and that URL is opened in the Codex in-app browser. Do not click Submit/Generate, do not use DOM selectors or coordinates to submit, and do not start chunks/code generation. Resume only when the user asks Codex to continue after the first submission marker appears.'
         : undefined,
     recommendedAction: slothCli.available ? phaseRecommendedAction : slothCli.message,
     commands: {
@@ -2654,7 +2694,7 @@ async function workflowGuide(workspace, args, agentId) {
         step: skipInterceptor && isFirstRunWaiting ? 'generate-chunks-silently' : isFirstRunWaiting ? 'prepare-first-run' : 'open-interceptor',
         status: needsSlothCliInstall ? 'blocked' : 'ready',
         action: skipInterceptor && isFirstRunWaiting
-          ? 'Run commands.firstRun to generate chunks/prompts silently, then continue directly to first implementation generation. Do not open the interceptor or wait for workflow.submitted.'
+          ? 'Run commands.firstRun to generate chunks/prompts silently, then continue directly to first implementation generation. Do not open the interceptor or wait for submission.json.'
           : needsDevInterceptor
           ? 'Start the Sloth workflow dev launcher, rerun workflow-handoff, then run commands.prepareFirstRun. Open the returned codexHandoff.interceptorUrl in the Codex in-app browser, then stop for the user. Do not click Submit/Generate or trigger the form. Use shell open/system default browser/Chrome only if the Codex in-app browser is unavailable or control fails.'
           : isInitialGeneration
@@ -2681,17 +2721,21 @@ async function workflowGuide(workspace, args, agentId) {
       },
       {
         step: 'wait-or-handle-event',
-        status: hasPendingEvent ? 'ready' : isFirstRunWaiting ? 'return-to-user' : 'waiting',
+        status: hasPendingEvent || isInitialGeneration ? 'ready' : isFirstRunWaiting ? 'return-to-user' : 'waiting',
         action: hasPendingEvent
           ? phase === 'initial_generation_requested'
             ? needsInitialChunks
-              ? 'Run sloth d2c first to generate chunks/prompts for the submitted groups, then claim the workflow.submitted event and generate the first implementation by following those prompts in order: group chunks, codeAggregation.md, then finalGenerate.md. Output real project components/styles/assets. Do not wrap absolute.html or raw HTML. After the preview is reachable, capture an implementation screenshot and compare it against screenshots/index.png with agent visual review.'
-              : 'Claim the workflow.submitted event, then generate the first implementation by following existing Sloth D2C prompts in order: group chunks, codeAggregation.md, then finalGenerate.md. Output real project components/styles/assets. Do not wrap absolute.html or raw HTML. After the preview is reachable, capture an implementation screenshot and compare it against screenshots/index.png with agent visual review.'
+              ? 'Run sloth d2c first to generate chunks/prompts for the submitted groups, then generate the first implementation by following those prompts in order: group chunks, codeAggregation.md, then finalGenerate.md. Output real project components/styles/assets. Do not wrap absolute.html or raw HTML. After the preview is reachable, capture an implementation screenshot and compare it against screenshots/index.png with agent visual review.'
+              : 'Generate the first implementation by following existing Sloth D2C prompts in order: group chunks, codeAggregation.md, then finalGenerate.md. Output real project components/styles/assets. Do not wrap absolute.html or raw HTML. After the preview is reachable, capture an implementation screenshot and compare it against screenshots/index.png with agent visual review.'
             : 'Claim the returned pending event, then handle the eventBrief.'
+          : isInitialGeneration
+            ? needsInitialChunks
+              ? 'Run sloth d2c first to generate chunks/prompts from submission.json, then generate the first implementation by following those prompts in order: group chunks, codeAggregation.md, then finalGenerate.md. Output real project components/styles/assets. Do not wrap absolute.html or raw HTML. After the preview is reachable, write implementationUrl and capture an implementation screenshot.'
+              : 'Use submission.json as the first-run gate, then generate the first implementation from the existing Sloth D2C prompts. After the preview is reachable, write implementationUrl and capture an implementation screenshot.'
           : isFirstRunWaiting
             ? skipInterceptor
               ? 'Continue first implementation generation from chunks/prompts in the same turn. Do not open the interceptor.'
-              : 'Do not poll here. End the turn after opening the interceptor; the user will submit the first workflow and ask Codex to continue.'
+              : 'Do not poll here. End the turn after opening the interceptor; the user will submit the first-run form and ask Codex to continue.'
             : isLoopWaiting
               ? 'Wait specifically for annotation.submitted from generated-preview annotations.'
               : 'Wait for the next actionable workflow event.',
@@ -2699,11 +2743,17 @@ async function workflowGuide(workspace, args, agentId) {
           ? needsInitialChunks
             ? handoff.commands.generateChunks
             : handoff.eventBrief?.commands?.claimEvent || handoff.commands.claimEventTemplate
+          : isInitialGeneration
+            ? needsInitialChunks
+              ? handoff.commands.generateChunks
+              : null
           : isFirstRunWaiting
             ? null
             : handoff.commands.waitNextEvent,
         doneWhen: hasPendingEvent
           ? 'The interceptor timeline shows Codex is handling the event.'
+          : isInitialGeneration
+            ? 'Initial code exists as real project components/styles/assets, the target app preview is running, implementationUrl has been written, and an implementation screenshot is saved under screenshots/implementation.'
           : isFirstRunWaiting
             ? skipInterceptor
               ? 'Initial code exists as real project components/styles/assets, chunks were consumed, and the interceptor was not opened during first generation.'
@@ -2712,35 +2762,39 @@ async function workflowGuide(workspace, args, agentId) {
       },
       {
         step: 'inspect-event',
-        status: hasPendingEvent ? 'pending-work' : isFirstRunWaiting ? 'not-started-until-user-submit' : 'blocked-until-event',
+        status: hasPendingEvent || isInitialGeneration ? 'pending-work' : isFirstRunWaiting ? 'not-started-until-user-submit' : 'blocked-until-event',
         action: phase === 'initial_generation_requested'
           ? needsInitialChunks
             ? 'Do not inspect app code yet. First run sloth d2c and verify chunks/codeAggregation/finalGenerate exist. Then follow those generated prompts/chunks in order to create the initial implementation as normal project code. After the preview is reachable, write implementationUrl, capture the implementation screenshot, and visually compare it with screenshots/index.png. absolute.html is only a reference; do not embed it.'
             : 'Use the submitted groups, annotations, screenshots, and Sloth-generated chunks/prompts in order to create the initial implementation as normal project code. Do not write implementationUrl until the target app preview is reachable. Then capture the implementation screenshot and visually compare it with screenshots/index.png. Keep the Codex in-app browser on the Sloth interceptor; do not navigate it to the target preview. absolute.html is only a reference; do not embed it.'
           : isFirstRunWaiting
-            ? 'No code inspection yet. The first actionable context appears after workflow.submitted.'
+            ? 'No code inspection yet. The first actionable context appears after submission.json.'
             : 'Inspect the event brief, edit code, run one narrow useful check, and avoid visual diff unless explicitly needed.',
-        command: hasPendingEvent ? handoff.commands.eventBrief : isFirstRunWaiting ? null : handoff.commands.eventBrief,
+        command: hasPendingEvent ? handoff.commands.eventBrief : null,
         doneWhen: phase === 'initial_generation_requested'
           ? 'Initial code exists as real project components/styles/assets, it is not an absolute.html/raw HTML wrapper, the target app preview is running, implementationUrl has been written, an implementation screenshot is saved under screenshots/implementation, agent visual review against screenshots/index.png has been performed, and the Sloth interceptor is still the visible Codex browser surface.'
           : isFirstRunWaiting
-            ? 'The user submits the first workflow and asks Codex to continue.'
+            ? 'The user submits the first-run form and asks Codex to continue.'
           : hasPendingEvent
             ? 'Code changes and checks for nextEvent are complete.'
             : 'A pending event exists.',
       },
       {
         step: 'complete-event',
-        status: hasPendingEvent ? 'pending-work' : isFirstRunWaiting ? 'not-started-until-user-submit' : 'blocked-until-event',
-        action: isFirstRunWaiting
-          ? 'Do not complete anything yet; no human workflow event has been submitted.'
+        status: hasPendingEvent ? 'pending-work' : isInitialGeneration ? 'not-needed' : isFirstRunWaiting ? 'not-started-until-user-submit' : 'blocked-until-event',
+        action: isInitialGeneration
+          ? 'Do not complete an event for first generation; write implementationUrl after the target preview is reachable.'
+          : isFirstRunWaiting
+          ? 'Do not complete anything yet; no first-run submission marker has appeared.'
           : 'Write an agent.result event and acknowledge only the handled human event ids.',
         command: hasPendingEvent
           ? handoff.eventBrief?.commands?.completeEvent || handoff.commands.completeEventTemplate
-          : isFirstRunWaiting
+          : isFirstRunWaiting || isInitialGeneration
             ? null
             : handoff.commands.completeEventTemplate,
-        doneWhen: isFirstRunWaiting
+        doneWhen: isInitialGeneration
+          ? 'implementationUrl has been written; loop state starts after that point.'
+          : isFirstRunWaiting
           ? 'No completion action is needed in design_prepare.'
           : 'complete-event returns remainingPendingCount. Continue the loop if it is greater than 0.',
       },

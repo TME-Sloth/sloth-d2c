@@ -615,6 +615,40 @@ async function main() {
 	    assert.equal(silentGuide.mode, 'silent-first-run')
 	    assert.equal(silentGuide.guide[0].step, 'generate-chunks-silently')
 	    assert.equal(silentGuide.guide[0].command, silentHandoff.commands.firstRun)
+	    const submittedFirstRun = await createDesignPrepareWorkspace()
+	    try {
+	      await writeJson(path.join(d2cDir(submittedFirstRun.workspace, submittedFirstRun.fileKey, submittedFirstRun.nodeId), 'submission.json'), {
+	        status: 'submitted',
+	        intent: 'initial-generation',
+	        source: 'interceptor',
+	        submittedAt: new Date().toISOString(),
+	        fileKey: submittedFirstRun.fileKey,
+	        nodeId: submittedFirstRun.nodeId,
+	        groupCount: 2,
+	      })
+	      const submittedHandoff = await runCli([
+	        'workflow-handoff',
+	        '--workspace',
+	        submittedFirstRun.workspace,
+	        '--file-key',
+	        submittedFirstRun.fileKey,
+	        '--node-id',
+	        submittedFirstRun.nodeId,
+	        '--agent-id',
+	        'codex',
+	      ])
+	      assert.equal(submittedHandoff.workflowPhase.phase, 'initial_generation_requested')
+	      assert.equal(submittedHandoff.workflowPhase.waitingFor, 'codex-initial-generation')
+	      assert.equal(submittedHandoff.nextEvent, null)
+	      assert.equal(submittedHandoff.pendingEvents.length, 0)
+	      assert.equal(submittedHandoff.submission.groupCount, 2)
+	      assert.match(submittedHandoff.submission.path, /submission\.json$/)
+	      assert.match(submittedHandoff.recommendedAction, /submission\.json/)
+	      assert.equal(submittedHandoff.initialGeneration.mustRunSlothD2cBeforeCoding, true)
+	      await assert.rejects(fs.stat(loopDir(submittedFirstRun.workspace, submittedFirstRun.fileKey, submittedFirstRun.nodeId)), /ENOENT/)
+	    } finally {
+	      await fs.rm(submittedFirstRun.workspace, { recursive: true, force: true })
+	    }
 	    const defaultToken = new URL(defaultHandoff.commands.openUrl).searchParams.get('token')
     assert.match(defaultToken, /^sloth-d2c-[0-9a-f-]{36}$/)
 

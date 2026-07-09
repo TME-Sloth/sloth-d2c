@@ -5,7 +5,7 @@ description: '用于通过 Sloth 拦截页、持久化 loop、快照和增量标
 
 # Sloth D2C 工作流
 
-用于连接 Codex 与 Sloth D2C 拦截页。拦截页是用户交互界面；首次转码不属于 loop。Codex 环境下先运行 `commands.prepareFirstRun`，它会运行正常的 `sloth d2c` 准备 REST/local 设计数据；服务端通过 Codex 环境变量自动进入 handoff，返回 `codexHandoff.interceptorUrl`，但不会打开 Chrome 或阻塞等待提交。首次提交是人工门禁：用户必须自己在拦截页确认配置、分组和标注后点击生成。用户提交后再按 `groupsData.json` 和 `chunks/` 生成初版实现。只有写入 `implementationUrl` 后，才通过插件脚本读写目标项目的 `.sloth/<fileKey>/<nodeId>/loop/` 状态。
+用于连接 Codex 与 Sloth D2C 拦截页。拦截页是用户交互界面；首次转码不属于 loop。Codex 环境下先运行 `commands.prepareFirstRun`，它会运行正常的 `sloth d2c` 准备 REST/local 设计数据；服务端通过 Codex 环境变量自动进入 handoff，返回 `codexHandoff.interceptorUrl`，但不会打开 Chrome 或阻塞等待提交。首次提交是人工门禁：用户必须自己在拦截页确认配置、分组和标注后点击生成。用户提交后会写入 `.sloth/<fileKey>/<nodeId>/submission.json`，再按 `groupsData.json` 和 `chunks/` 生成初版实现。只有写入 `implementationUrl` 后，才通过插件脚本读写目标项目的 `.sloth/<fileKey>/<nodeId>/loop/` 状态。
 
 进入 loop 后，用户的继续处理 prompt 应尽量短，只传 `fileKey`、`nodeId`、`eventId`、`count`、`implementationUrl` 等定位字段。标注详情、当前阶段、已处理进度和 ack 状态都从目标项目本地 `.sloth/.../loop/state.json`、`events.jsonl`、`snapshots/` 读取；如果当前 cwd 没有对应状态，应先定位真实生成 workspace，再处理事件。
 
@@ -49,7 +49,7 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs workflow-handoff \
   --silent
 ```
 
-此时返回 `interceptorMode: "silent"`。首次生成走静默路径，**不要**打开拦截页，也**不要**等待 `workflow.submitted` 人工提交：
+此时返回 `interceptorMode: "silent"`。首次生成走静默路径，**不要**打开拦截页，也**不要**等待 `submission.json` 人工提交：
 
 1. 运行 `commands.firstRun`（即 `commands.rawSlothD2c`）或 `commands.generateChunks`，直接拉取设计数据并生成 chunks/prompts。
 2. 校验 `chunksDir` 后，在同一回合继续按 group chunks → `codeAggregation.md` → `finalGenerate.md` 生成初版实现。
@@ -109,13 +109,13 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs workflow-handoff \
 
 对于有分组的提交，有效 chunk 输出应包含一个或多个 group chunk 文件，例如 `0.md`、`1.md` 等，并且包含 `codeAggregation.md` 和 `finalGenerate.md`。当提交中存在分组时，只有 `codeAggregation.md` 和 `finalGenerate.md` 不够。首次实现代码开始前，必须先运行 chunk 生成并检查预期的 chunk 结构。
 
-如果用户在 Skill/拦截页路径启用了“自动分组 / AI 分组”，并出现 `autoGroupingHandoff.requiresAutoGrouping=true`、`autoGrouping.md` 或 `autoGrouping.meta.json`，不要把自动分组细节写在本 workflow 里，也不要把 `autoGrouping.md` 全量读入主上下文。直接派一个聚焦 subagent 使用 `$sloth-d2c-auto-grouping` 读取 promptPath 并写入 `groupsData.json`；主 agent 只重新读取本地 `groupsData.json` 确认结果。拦截页按钮路径会轮询该文件并自动反填；静默首次生成路径则在文件写入后继续运行 `autoGroupingHandoff.rerunCommand` 生成 chunks。
+如果用户在 Skill/拦截页路径启用了“自动分组 / AI 分组”，并出现 `tasks/subAgentTask-autoGrouping-*.md` 或 `autoGroupingHandoff.requiresAutoGrouping=true`，不要把自动分组细节写在本 workflow 里，也不要把任务提示词全量读入主上下文。把 task 文件交给聚焦 subagent 使用 `$sloth-d2c-auto-grouping` 处理。主 agent 只重新读取本地 `groupsData.json` 确认结果；任务成功后必须删除对应 `subAgentTask-autoGrouping-*.md`，失败则保留用于重试。拦截页按钮路径会轮询该文件并自动反填；静默首次生成路径则在文件写入后继续运行 `autoGroupingHandoff.rerunCommand` 生成 chunks。
 
 有分组 chunk 时，建议把 chunk 转码工作拆给 subagents：每个 subagent 只处理一个或一小组独立的 group chunk，返回组件代码、依赖资源、样式要点和风险。这样更接近旧 skill 的并行 chunk 处理方式，也能减少主 agent 串行读取所有 chunks 后独自转码的风险。一般最多同时派发 6 个 subagents；group chunks 多于 6 个时可分批派发。若当前运行环境没有可用 subagent 能力，或任务规模很小，也可以由主 agent 直接处理，并在收尾说明采用了哪种路径。
 
 实现必须遵循 chunks 里的提示词，而不是只把 chunks 当参考资料扫一眼。处理顺序是：先按每个 group chunk（如 `0.md`、`1.md`）生成对应模块/组件，再按 `codeAggregation.md` 组织组件关系、数据流和依赖，最后按 `finalGenerate.md` 完成最终页面写入、样式整合和验收要求。不要跳过、改写或选择性忽略 chunk prompt 中的约束；如果 chunk prompt 和个人判断冲突，优先说明冲突并按 prompt 约束实现。
 
-如果 chunk 目录的上级目录存在 `marked-components.todo.json`，首次实现写入真实组件后必须消费该文件：读取其中 `components`，将 todo 中的 `name` 视为建议名，用实际写入的组件名、路径、import、props 和描述合并项目根目录 `.sloth/components.json`，并保留 todo 中的 `signature` 供后续截图匹配。Skills / Codex plugin 场景不要调用 MCP `mark_components` 工具；组件登记通过本地文件写入完成。
+如果 chunk 目录的上级目录存在 `tasks/subAgentTask-componentRegistration-*.md`，首次实现写入真实组件后必须消费组件登记任务。把 task 文件交给 `$sloth-d2c-components`，用实际写入的组件名、路径、import、props 和描述合并项目根目录 `.sloth/components.json`，并保留 task 中的 `signature` 供后续截图匹配。任务成功后必须删除对应 `subAgentTask-componentRegistration-*.md`；失败则保留用于重试。Skills / Codex plugin 场景不要调用 MCP `mark_components` 工具；组件登记通过本地文件写入完成。
 
 `absolute.html` 是设计稿快照/坐标参考，不是可交付实现。可以读取它来理解布局、文案、图片资源和元素位置，但不要把它整页塞进 React/Vue/页面里，也不要用 iframe、`srcDoc`、`dangerouslySetInnerHTML`、原始 HTML 字符串或“外层缩放壳”包装它来冒充实现。首次实现必须消费 chunks/prompts，写入目标项目的真实组件、样式、资源引用和交互代码。
 
