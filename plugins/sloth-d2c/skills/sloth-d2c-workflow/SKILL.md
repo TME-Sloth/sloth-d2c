@@ -75,7 +75,7 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs prepare-interceptor \
   --node-id <nodeId>
 ```
 
-读取 `ok`、`action`、`interceptorUrl`、`codexBrowserOpen`、`stopCondition`、`forbidden`。当 `ok === true` 且 `action === "open_codex_browser_and_stop"` 时，立即按 `codexBrowserOpen` 打开 Codex 内置浏览器，然后停止本回合，等待用户在拦截页提交。不要再解释准备过程的中间步骤，不要再运行 `workflow-handoff` 复查；首次提交前只查看 `.sloth/<fileKey>/<nodeId>/tasks` 中的子任务和 `submission.json`。
+读取 `ok`、`action`、`interceptorUrl`、`codexBrowserOpen`、`pollTargets`、`pollPolicy` 和 `forbidden`。当 `ok === true` 且 `action === "open_browser_and_poll_sloth"` 时，立即按 `codexBrowserOpen` 打开 Codex 内置浏览器，然后必须进入本地文件轮询，不能在页面打开后直接结束本回合。按 `pollPolicy` 检查 `pollTargets.tasksDir/subAgentTask-*.md` 和 `pollTargets.submissionPath`：出现任务就处理并继续轮询，出现有效提交就立即进入首次生成；只有达到轮询时限仍无结果时，才结束本回合等待用户后续回复。
 
 如果返回 `action === "install_sloth_cli"`，按返回的 `command` 安装后重新运行 `prepare-interceptor`。如果返回 `action === "handle_pending_event"` 或 `action === "continue_existing_workflow"`，说明已经不是首次准备阶段，改按返回的 `workflowPhase` / `eventBrief` 继续后续生成或 loop。
 
@@ -98,8 +98,8 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs workflow-handoff \
 
 1. 运行 `prepare-interceptor`，让它执行首次 `sloth d2c` 准备、拉取 REST 数据或读取本地缓存，并写入目标项目 `.sloth/<fileKey>/<nodeId>/` 的基础设计数据。
 2. 按 `codexBrowserOpen` 打开命令返回的 `codexHandoff.interceptorUrl`，不是预先返回的 `commands.openUrl`。
-3. 停在拦截页，把控制权交给用户。不要检查提交按钮是否可用后自行点击，不要用 DOM selector、坐标点击、快捷键或脚本触发表单提交。
-4. 用户在拦截页提交后，再运行/校验 Sloth D2C chunk 生成命令。
+3. 保持浏览器停在拦截页，把页面控制权交给用户，同时立即开始轮询本地任务和提交状态。不要检查提交按钮是否可用后自行点击，不要用 DOM selector、坐标点击、快捷键或脚本触发表单提交。
+4. 轮询期间检测到用户提交后，无需用户再回复“继续”，立即运行/校验 Sloth D2C chunk 生成命令。
 5. 如果生成了数字 group chunk prompts，优先使用 subagents 并行处理它们。
 6. 使用最终 prompt 写入可运行的项目文件。
 
@@ -111,7 +111,7 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs workflow-handoff \
 2. subagent 完成后，只重新读取它声明的本地产物，例如 `groupsData.json` 或项目根 `.sloth/components.json`；不要在主上下文展开 task 正文里的大提示词。任务成功后对应 `subAgentTask-*.md` 必须被删除；失败则保留用于重试。
 3. `groupsData.json` 只表示已有分组数据，不表示用户已经确认提交；没有 `submission.json` 时不要生成 chunks 或代码。
 4. `submission.json` 是唯一的首次提交标记。只有确认 `{ "status": "submitted", "intent": "initial-generation" }` 后，才运行 chunk 生成命令并进入首次实现。
-5. 如果需要等待用户提交或子任务产物，做短轮询：大约每 10 秒扫描一次，最多约 3 分钟。到达上限仍无可处理结果时，停止本回合并说明仍在等待用户提交；用户回复继续后，再重新读取同一路径。
+5. 页面打开后必须做短轮询：大约每 10 秒扫描一次，最多约 3 分钟。处理完子任务后继续轮询剩余时长；检测到有效提交时立即继续首次生成。只有到达上限仍无可处理结果时，才停止本回合并说明仍在等待用户提交；用户回复继续后，再重新读取同一路径。
 
 静默模式（`interceptorMode: "silent"`）下，跳过上述 2–4 步：直接运行 `commands.firstRun` 生成 chunks，并在同一回合继续 5–6 步；首次生成阶段不要打开拦截页。
 
@@ -150,9 +150,9 @@ Codex 内置浏览器应保持在 Sloth 拦截页，避免把用户的 Sloth 拦
 
 ### `design_prepare`
 
-交互模式：先运行 `prepare-interceptor`。它会运行 `sloth d2c --json`，准备 REST/local 设计数据，同步项目 `.sloth` 基础文件，并返回 `codexHandoff.interceptorUrl`。按 `codexBrowserOpen` 在 Codex 内置浏览器中打开这个返回 URL。确认 Sloth D2C 页面和设计预览可见，然后结束当前回合，等待用户提交首次 workflow 后继续。
+交互模式：先运行 `prepare-interceptor`。它会运行 `sloth d2c --json`，准备 REST/local 设计数据，同步项目 `.sloth` 基础文件，并返回 `codexHandoff.interceptorUrl`。按 `codexBrowserOpen` 在 Codex 内置浏览器中打开这个返回 URL。确认 Sloth D2C 页面和设计预览可见后，立即按返回的 `pollTargets` 和 `pollPolicy` 轮询本地任务与 `submission.json`；提交出现后在同一回合继续首次生成。
 
-此阶段不要生成 chunks、不要生成代码、不要启动目标应用、不要写入 `implementationUrl`、不要 ack 事件，也不要运行长轮询。不要读取页面控件状态后代替用户点击“提交/生成”；即使页面已有默认配置、按钮可用，也必须停住。必须使用 `commands.prepareFirstRun` 返回的拦截页 URL，不要手动打开预先拼出来的拦截页 URL。
+提交标记出现前不要生成 chunks、不要生成代码、不要启动目标应用、不要写入 `implementationUrl`、不要 ack 事件。等待期间必须执行约 10 秒一次、最多约 3 分钟的本地文件轮询。不要读取页面控件状态后代替用户点击“提交/生成”；页面已有默认配置或按钮可用也不代表已经提交。必须使用 `commands.prepareFirstRun` 返回的拦截页 URL，不要手动打开预先拼出来的拦截页 URL。
 
 静默模式：运行 `commands.firstRun` 生成 chunks/prompts，校验 chunk 结构后在同一回合继续首次实现生成；不要打开拦截页，也不要等待用户提交。
 
@@ -199,6 +199,6 @@ Codex 内置浏览器应保持在 Sloth 拦截页，避免把用户的 Sloth 拦
 
 ## 收尾
 
-报告当前阶段、`interceptorMode`、拦截页是否已打开（静默首次生成应报告未打开）、已处理事件 id、chunk 处理方式（subagent 并行或主 agent 直接处理）、`implementationUrl` 是否已写入、变更文件和已运行校验。交互模式下 `design_prepare` 阶段，只需报告页面已打开并等待用户提交。
+报告当前阶段、`interceptorMode`、拦截页是否已打开（静默首次生成应报告未打开）、已处理事件 id、chunk 处理方式（subagent 并行或主 agent 直接处理）、`implementationUrl` 是否已写入、变更文件和已运行校验。交互模式下 `design_prepare` 只有在约 3 分钟轮询超时后，才报告页面已打开且仍在等待用户提交。
 
 交互模式和 loop 阶段的收尾不要贴真实实现 URL 或本地 Vite URL。若要给用户一个可打开入口，只给 Sloth 拦截页 URL，并确认 Codex 内置浏览器已停在该拦截页。

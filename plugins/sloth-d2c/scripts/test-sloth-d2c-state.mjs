@@ -516,7 +516,7 @@ async function main() {
 	    assert.equal(defaultHandoff.codexBrowserOpen.skill, 'browser:control-in-app-browser')
 	    assert.equal(defaultHandoff.codexBrowserOpen.target, 'iab')
 	    assert.equal(defaultHandoff.codexBrowserOpen.urlSource, 'commands.prepareFirstRun.codexHandoff.interceptorUrl')
-	    assert.equal(defaultHandoff.codexBrowserOpen.afterOpen, 'return-to-user')
+	    assert.equal(defaultHandoff.codexBrowserOpen.afterOpen, 'poll-sloth-files')
 	    assert.match(defaultHandoff.commands.rawSlothD2c, /sloth.*d2c/)
 	    assert.match(defaultHandoff.commands.rawSlothD2c, /--silent/)
 	    assert.doesNotMatch(defaultHandoff.commands.rawSlothD2c, /--auto-grouping/)
@@ -556,12 +556,16 @@ async function main() {
 	      },
 	    )
 	    assert.equal(prepared.ok, true)
-	    assert.equal(prepared.action, 'open_codex_browser_and_stop')
+	    assert.equal(prepared.action, 'open_browser_and_poll_sloth')
 	    assert.match(prepared.command, /sloth.*d2c/)
 	    assert.equal(prepared.interceptorUrl, `http://localhost:3100/auth-page?token=sloth-d2c-test-token&fileKey=${designPrepare.fileKey}&nodeId=${designPrepare.nodeId}&mode=create`)
 	    assert.equal(prepared.codexBrowserOpen.url, prepared.interceptorUrl)
 	    assert.equal(prepared.codexBrowserOpen.urlSource, 'prepare-interceptor.codexHandoff.interceptorUrl')
-	    assert.deepEqual(prepared.forbidden, ['submit_interceptor', 'generate_code', 'poll_event', 'write_implementation_url'])
+	    assert.equal(prepared.pollPolicy.intervalSeconds, 10)
+	    assert.equal(prepared.pollPolicy.maxDurationSeconds, 180)
+	    assert.match(prepared.pollTargets.tasksDir, /tasks$/)
+	    assert.match(prepared.pollTargets.submissionPath, /submission\.json$/)
+	    assert.deepEqual(prepared.forbidden, ['submit_interceptor', 'generate_code_before_submission', 'write_implementation_url_before_generation'])
 	    const defaultGuide = await runCli([
 	      'workflow-guide',
 	      '--workspace',
@@ -742,7 +746,8 @@ async function main() {
 	    assert.match(handoff.recommendedAction, /commands\.prepareFirstRun/)
 	    assert.equal(handoff.commands.openUrl, null)
 	    assert.match(handoff.commands.startWorkflowDev, /start-workflow-dev\.mjs/)
-	    assert.match(handoff.stopCondition, /commands\.prepareFirstRun/)
+	    assert.match(handoff.stopCondition, /every 10 seconds/)
+	    assert.match(handoff.stopCondition, /3 minutes/)
 	    const guide = await runCli([
       'workflow-guide',
       '--workspace',
@@ -760,7 +765,7 @@ async function main() {
 	    assert.equal(firstStep.step, 'prepare-first-run')
 	    assert.equal(firstStep.command, handoff.commands.startWorkflowDev)
 	    const waitStep = guide.guide.find((step) => step.step === 'wait-or-handle-event')
-	    assert.equal(waitStep.status, 'return-to-user')
+	    assert.equal(waitStep.status, 'polling')
 	    assert.equal(waitStep.command, null)
 	  } finally {
 	    await fs.rm(designPrepare.workspace, { recursive: true, force: true })
