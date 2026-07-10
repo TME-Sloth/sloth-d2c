@@ -1,19 +1,19 @@
 ---
-name: sloth-d2c-loop
-description: "用于继续 Sloth D2C 生成稿修改闭环。适用于用户保存生成预览标注、要求只处理某个 eventId、继续 implementation loop、处理 annotation.submitted/diff.confirmed/repair.requested 事件并写回 agent 结果。"
+name: sloth-d2c-work
+description: "用于继续 Sloth D2C 生成稿修改工作。适用于用户保存生成预览标注、要求只处理某个 eventId、继续 implementation work、处理 annotation.submitted/diff.confirmed/repair.requested 事件并写回 agent 结果。"
 ---
 
-# Sloth D2C Loop
+# Sloth D2C Work
 
 用于承接保存生成稿标注后的一句话 prompt。默认流程是事件定位、必要代码修改、一个最小检查和 `complete-event`。
 
 ## 入口
 
-先从用户 prompt 提取可用的 `fileKey`、`nodeId`、`eventId` 和 `implementationUrl`。如果 prompt 只说“刚保存的生成稿标注”，就从本地 `.sloth` loop 状态定位最新待处理事件。
+先从用户 prompt 提取可用的 `fileKey`、`nodeId`、`eventId` 和 `implementationUrl`。如果 prompt 只说“刚保存的生成稿标注”，就从本地 `.sloth` work 状态定位最新待处理事件。
 
-如果用户只是想在没有设计稿链接的情况下打开拦截页、调提示词、做组件映射或把已有实现页接进来，先切到 `sloth-d2c-workflow` 的 `open-interceptor` 入口。若 workflow 也没有推断出设计会话或页面 URL，应询问用户是要转代码还是打开拦截页：转代码需要 Figma 链接或 Figma 插件里的 fileKey/nodeId；打开拦截页标注需要目标项目和页面 URL。`sloth-d2c-loop` 只处理已经保存到 `.sloth/.../loop/events.jsonl` 的后续事件；不要把“寻找设计会话/创建临时工作台”塞进 loop 事件处理。
+如果用户只是想在没有设计稿链接的情况下打开拦截页、调提示词、做组件映射或把已有实现页接进来，先切到 `sloth-d2c-workflow` 的 `open-interceptor` 入口。若 workflow 也没有推断出设计会话或页面 URL，应询问用户是要转代码还是打开拦截页：转代码需要 Figma 链接或 Figma 插件里的 fileKey/nodeId；打开拦截页标注需要目标项目和页面 URL。`sloth-d2c-work` 只处理已经保存到 `.sloth/.../work/events.jsonl` 的后续事件；不要把“寻找设计会话/创建临时工作台”塞进事件处理。
 
-用户的继续处理 prompt 应保持轻量：可以只说处理刚保存的生成稿标注。事件正文、标注详情、处理进度和 ack 状态都以本地 `.sloth/<fileKey>/<nodeId>/loop/state.json`、`events.jsonl`、`snapshots/` 为事实源，由 agent 读取；不要要求用户把这些状态重新塞进 prompt。
+用户的继续处理 prompt 应保持轻量：可以只说处理刚保存的生成稿标注。事件正文、标注详情、处理进度和 ack 状态都以本地 `.sloth/<fileKey>/<nodeId>/work/state.json`、`events.jsonl`、`snapshots/` 为事实源，由 agent 读取；不要要求用户把这些状态重新塞进 prompt。
 
 `--workspace` 必须指向生成项目的真实 workspace，而不一定是当前 shell 的 cwd，也不一定是 Sloth 插件源码仓库。把 prompt 里的 workspace/cwd 视为候选，不要视为事实。
 
@@ -42,9 +42,9 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs annotation-workflow \
 
 1. 先在当前候选 workspace 运行 `workflow-handoff` 或 `annotation-workflow`。
 2. 如果返回的是空初始化状态（例如 `currentVersion: 0`、`pendingEvents: []`、没有 `.sloth` 目录），或报 `Event not found: <eventId>`，不要判断为“无事可做”，也不要 ack。
-3. 在本机相关 workspace 中寻找这个 event。优先检查当前 workspace、用户最近给出的实现项目、Sloth 拦截页记录的 workspace、当前 workspace 的父目录/兄弟目录；可以用 `rg "<eventId>" <candidate-root> -S --hidden -g '!node_modules' -g '!.git'` 或查找 `*/.sloth/<clean fileKey>/<clean nodeId>/loop/events.jsonl`。
+3. 在本机相关 workspace 中寻找这个 event。优先检查当前 workspace、用户最近给出的实现项目、Sloth 拦截页记录的 workspace、当前 workspace 的父目录/兄弟目录；可以用 `rg "<eventId>" <candidate-root> -S --hidden -g '!node_modules' -g '!.git'` 或查找 `*/.sloth/<clean fileKey>/<clean nodeId>/work/events.jsonl`。
 4. 找到包含该 event 的 `events.jsonl` 后，以它所在项目根作为 `--workspace` 重新运行 `annotation-workflow`。项目根是 `.sloth` 的父目录。
-5. 如果事件已在 `state.agents[*].processedEventIds` 中，说明已经 ack；读取最近的 `agent.result` 摘要并简短汇报“已处理/已 ack”，不要重复修改或再次 `complete-event`。
+5. 如果事件已在 `state.handledEventIds` 中，说明已经 ack；读取最近的 `agent.result` 摘要并简短汇报“已处理/已 ack”，不要重复修改或再次 `complete-event`。
 6. 只有在多个候选 workspace 都查不到该 event 时，才报告找不到状态，并列出已检查的候选位置。
 
 ## 处理规则
@@ -52,7 +52,7 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs annotation-workflow \
 - 只处理当前 `eventId`，不要默认扫描或重放历史标注。
 - `eventId` 是本次处理边界；即使本地还有其它 pending event，也不要顺手处理。
 - 对 `annotation.submitted`，只消费事件里的 `changedCanvasAnnotations`，并且只处理 `target=implementation` 的标注。
-- 默认不要读取 `loop/snapshots/*.json` 的全量内容；只有事件缺少 changed annotations 或明确需要恢复某个分组上下文时，才读取对应 snapshot。
+- 默认不要读取 `work/snapshots/*.json` 的全量内容；只有事件缺少 changed annotations 或明确需要恢复某个分组上下文时，才读取对应 snapshot。
 - 对 `diff.confirmed` 或 `repair.requested`，按事件摘要修复；只有事件明确要求视觉 diff 时才进入 `sloth-d2c-design-diff`。
 - 修改本地生成代码/样式后，运行一个能证明改动生效的最小检查。Sloth 拦截页必须常驻；不要把 Codex in-app browser、Browser 工具或用户正在看的 Chrome 标签页导航到 `implementationUrl`。
 - 需要验证真实预览时，使用一次性 Playwright/Puppeteer/headless 浏览器、HTTP smoke check、项目 e2e/smoke 脚本或直接读取源代码事件绑定；不要把当前 Sloth 拦截页切到业务预览页。

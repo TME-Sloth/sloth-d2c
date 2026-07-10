@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import http from 'node:http'
-import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -24,8 +23,8 @@ function d2cDir(workspace, fileKey, nodeId) {
   return path.join(workspace, '.sloth', cleanPart(fileKey), cleanPart(nodeId))
 }
 
-function loopDir(workspace, fileKey, nodeId) {
-  return path.join(d2cDir(workspace, fileKey, nodeId), 'loop')
+function workDir(workspace, fileKey, nodeId) {
+  return path.join(d2cDir(workspace, fileKey, nodeId), 'work')
 }
 
 async function writeJson(filePath, value) {
@@ -39,78 +38,10 @@ async function runCli(args, options = {}) {
     ...options,
     env: {
       ...process.env,
-      SLOTH_DISABLE_CODEX_TOKEN_BRIDGE: '1',
       ...(options.env || {}),
     },
   })
   return JSON.parse(stdout)
-}
-
-async function createTokenBridgeServers() {
-  const registrations = []
-  const sockets = new Set()
-  const base = 43000 + Math.floor(Math.random() * 1000)
-
-  for (let offset = 0; offset < 100; offset += 2) {
-    const port = base + offset
-    const httpServer = http.createServer((req, res) => {
-      if (req.url?.startsWith('/validateToken')) {
-        res.setHeader('content-type', 'application/json')
-        res.end(JSON.stringify({ valid: false }))
-        return
-      }
-      res.end('ok')
-    })
-    const socketServer = net.createServer((socket) => {
-      sockets.add(socket)
-      socket.setEncoding('utf8')
-      socket.write(JSON.stringify({ type: 'welcome' }) + '\n')
-      let buffer = ''
-      socket.on('data', (chunk) => {
-        buffer += chunk
-        const lines = buffer.split('\n')
-        buffer = lines.pop() || ''
-        for (const line of lines) {
-          if (!line.trim()) continue
-          const message = JSON.parse(line)
-          if (message.type === 'register-token') {
-            registrations.push(message)
-            socket.write(JSON.stringify({ type: 'token-registered', token: message.token }) + '\n')
-          }
-        }
-      })
-      socket.on('close', () => sockets.delete(socket))
-    })
-
-    try {
-      await new Promise((resolve, reject) => {
-        httpServer.once('error', reject)
-        httpServer.listen(port, resolve)
-      })
-      await new Promise((resolve, reject) => {
-        socketServer.once('error', reject)
-        socketServer.listen(port + 1, resolve)
-      })
-      return {
-        port,
-        registrations,
-        close: async () => {
-          for (const socket of sockets) socket.destroy()
-          await Promise.all([
-            new Promise((resolve, reject) => httpServer.close((error) => (error ? reject(error) : resolve()))),
-            new Promise((resolve, reject) => socketServer.close((error) => (error ? reject(error) : resolve()))),
-          ])
-        },
-      }
-    } catch {
-      await Promise.allSettled([
-        new Promise((resolve) => httpServer.close(() => resolve())),
-        new Promise((resolve) => socketServer.close(() => resolve())),
-      ])
-    }
-  }
-
-  throw new Error('Unable to allocate adjacent test ports')
 }
 
 async function waitFor(predicate, timeoutMs = 2000) {
@@ -130,7 +61,7 @@ async function createWorkspace() {
   const id = sessionId(fileKey, nodeId)
   const now = '2026-06-22T00:00:00.000Z'
   const targetD2cDir = d2cDir(workspace, fileKey, nodeId)
-  const targetLoopDir = loopDir(workspace, fileKey, nodeId)
+  const targetWorkDir = workDir(workspace, fileKey, nodeId)
   const canvasAnnotations = [
     {
       id: 'anno_old',
@@ -157,24 +88,18 @@ async function createWorkspace() {
   await fs.writeFile(path.join(targetD2cDir, 'absolute.html'), '<html><body>test</body></html>\n', 'utf8')
   await fs.writeFile(path.join(targetD2cDir, 'chunks', 'chunk.md'), '# chunk\n', 'utf8')
   await writeJson(path.join(targetD2cDir, 'groupsData.json'), [])
-  await writeJson(path.join(targetLoopDir, 'state.json'), {
-    sessionId: id,
+  await writeJson(path.join(targetWorkDir, 'state.json'), {
+    workId: id,
     fileKey,
     nodeId,
     currentVersion: 2,
     createdAt: now,
     updatedAt: now,
     latestSnapshotId: 'v0002',
-    agents: {
-      codex: {
-        processedUntilVersion: 1,
-        processedEventIds: ['evt_seed'],
-        updatedAt: now,
-      },
-    },
+    handledEventIds: ['evt_seed'],
     implementationUrl: 'http://127.0.0.1:9999/',
   })
-  await writeJson(path.join(targetLoopDir, 'snapshots', 'v0002.json'), {
+  await writeJson(path.join(targetWorkDir, 'snapshots', 'v0002.json'), {
     snapshotId: 'v0002',
     version: 2,
     fileKey,
@@ -184,10 +109,10 @@ async function createWorkspace() {
     createdAt: now,
   })
   await fs.writeFile(
-    path.join(targetLoopDir, 'events.jsonl'),
+    path.join(targetWorkDir, 'events.jsonl'),
     `${JSON.stringify({
       id: 'evt_annotation',
-      sessionId: id,
+      workId: id,
       version: 2,
       snapshotId: 'v0002',
       type: 'annotation.submitted',
@@ -251,18 +176,31 @@ function valueOf(name) {
 }
 const fileKey = valueOf('--file-key');
 const nodeId = valueOf('--node-id');
+const workspace = process.env.SLOTH_WORKSPACE_ROOT;
+const d2cDir = workspace + '/.sloth/' + fileKey + '/' + nodeId;
 console.log(JSON.stringify({
-  codexHandoff: {
-    enabled: true,
-    prepared: true,
-    token: 'sloth-d2c-test-token',
-    interceptorUrl: 'http://localhost:3100/auth-page?token=sloth-d2c-test-token&fileKey=' + encodeURIComponent(fileKey) + '&nodeId=' + encodeURIComponent(nodeId) + '&mode=create',
-    d2cDir: process.env.SLOTH_WORKSPACE_ROOT + '/.sloth/' + fileKey + '/' + nodeId,
-    copiedFiles: ['absolute.html', 'groupsData.json'],
-    bridge: { pid: 12345, socketPort: 3101 },
-    nextAction: 'open_in_codex_browser'
+  ok: true,
+  mode: 'interactive',
+  action: 'open_browser_and_poll_sloth',
+  prepared: true,
+  interceptorUrl: 'http://localhost:3100/auth-page?token=sloth-d2c-test-token&fileKey=' + encodeURIComponent(fileKey) + '&nodeId=' + encodeURIComponent(nodeId) + '&mode=create',
+  d2cDir,
+  copiedFiles: ['absolute.html', 'groupsData.json'],
+  pollTargets: {
+    tasksDir: d2cDir + '/tasks',
+    submissionPath: d2cDir + '/submission.json'
   },
-  content: [{ type: 'text', text: 'Codex handoff ready' }]
+  pollPolicy: { intervalSeconds: 10, maxDurationSeconds: 180 },
+  commands: { generateChunks: 'sloth d2c --local --json' },
+  forbidden: ['submit_interceptor', 'generate_code_before_submission', 'write_implementation_url_before_generation'],
+  codexBrowserOpen: {
+    enabled: true,
+    target: 'iab',
+    skill: 'browser:control-in-app-browser',
+    url: 'http://localhost:3100/auth-page?token=sloth-d2c-test-token&fileKey=' + encodeURIComponent(fileKey) + '&nodeId=' + encodeURIComponent(nodeId) + '&mode=create',
+    urlSource: 'interceptorUrl',
+    afterOpen: 'poll_sloth_files'
+  }
 }));
 `,
     'utf8',
@@ -294,13 +232,12 @@ async function main() {
       fileKey,
       '--node-id',
       nodeId,
-      '--agent-id',
-      'codex',
       '--dev-port',
       String(address.port),
     ])
     assert.equal(handoff.commands.openUrl, handoff.preferredInterceptorUrl)
     assert.match(handoff.commands.openUrl, new RegExp(`127\\.0\\.0\\.1:${address.port}`))
+    assert.equal(handoff.state.workId, sessionId(fileKey, nodeId))
     assert.equal(handoff.workflowPhase.phase, 'implementation_annotations_requested')
     assert.equal(handoff.nextEvent.id, 'evt_annotation')
     assert.equal(handoff.eventBrief.changedCanvasAnnotations.length, 1)
@@ -318,8 +255,6 @@ async function main() {
       fileKey,
       '--node-id',
       nodeId,
-      '--agent-id',
-      'codex',
     ])
     assert.equal(brief.eventBrief.changedCanvasAnnotations.length, 1)
     assert.equal(brief.eventBrief.changedCanvasAnnotations[0].text, '只处理本次新增画布标注')
@@ -336,8 +271,6 @@ async function main() {
       fileKey,
       '--node-id',
       nodeId,
-      '--agent-id',
-      'codex',
       '--event-ids',
       'evt_annotation',
       '--summary',
@@ -345,7 +278,7 @@ async function main() {
     ])
     assert.equal(complete.remainingPendingCount, 0)
     assert.deepEqual(complete.acknowledgedEventIds, ['evt_annotation'])
-    assert.equal(complete.state.agents.codex.processedUntilVersion, 2)
+    assert.deepEqual(complete.state.handledEventIds, ['evt_seed', 'evt_annotation'])
 
     const screenshotTarget = await runCli([
       'implementation-screenshot-target',
@@ -355,20 +288,16 @@ async function main() {
       fileKey,
       '--node-id',
       nodeId,
-      '--agent-id',
-      'codex',
       '--label',
       'preview_check',
     ])
     assert.equal(screenshotTarget.screenshotPath, path.join(d2cDir(workspace, fileKey, nodeId), 'screenshots', 'implementation', 'preview_check.png'))
-    await assert.rejects(fs.stat(path.join(loopDir(workspace, fileKey, nodeId), 'implementation-screenshots')), /ENOENT/)
+    await assert.rejects(fs.stat(path.join(workDir(workspace, fileKey, nodeId), 'implementation-screenshots')), /ENOENT/)
 
     const autoResolvedOpen = await runCli([
       'open-interceptor',
       '--workspace',
       workspace,
-      '--agent-id',
-      'codex',
       '--url',
       'http://127.0.0.1:9999/',
       '--port',
@@ -382,8 +311,6 @@ async function main() {
     assert.equal(autoResolvedOpen.selected.nodeId, nodeId)
     assert.equal(autoResolvedOpen.selected.workbench, false)
     assert.equal(autoResolvedOpen.implementation.wrote, false)
-    assert.doesNotMatch(autoResolvedOpen.commands.workflowHandoff, /--agent-id/)
-    assert.doesNotMatch(autoResolvedOpen.commands.waitNextEvent, /--agent-id/)
     assert.match(autoResolvedOpen.stopCondition, /If the user asked to open/)
 
     const resolvedOpen = await runCli([
@@ -394,8 +321,6 @@ async function main() {
       fileKey,
       '--node-id',
       nodeId,
-      '--agent-id',
-      'codex',
       '--url',
       'http://127.0.0.1:9999/',
       '--port',
@@ -414,8 +339,6 @@ async function main() {
       'open-interceptor',
       '--workspace',
       workspace,
-      '--agent-id',
-      'codex',
       '--url',
       implementationUrl,
       '--session',
@@ -430,18 +353,14 @@ async function main() {
     assert.equal(workbenchOpen.selected.workbench, true)
     assert.equal(workbenchOpen.implementation.url, implementationUrl)
     assert.equal(workbenchOpen.implementation.wrote, true)
-    assert.doesNotMatch(workbenchOpen.commands.setImplementationUrl, /--agent-id/)
-    assert.doesNotMatch(workbenchOpen.commands.workflowHandoff, /--agent-id/)
     assert.match(workbenchOpen.seededWorkbench.files.absoluteHtml, /\.sloth\/__workbench__\/prompt-lab\/absolute\.html$/)
     await fs.stat(path.join(d2cDir(workspace, '__workbench__', 'prompt-lab'), 'absolute.html'))
-    await fs.stat(path.join(loopDir(workspace, '__workbench__', 'prompt-lab'), 'state.json'))
+    await fs.stat(path.join(workDir(workspace, '__workbench__', 'prompt-lab'), 'state.json'))
 
     const reopenedWorkbench = await runCli([
       'open-interceptor',
       '--workspace',
       workspace,
-      '--agent-id',
-      'codex',
       '--url',
       implementationUrl,
       '--port',
@@ -464,8 +383,6 @@ async function main() {
       'open-interceptor',
       '--workspace',
       emptyWorkspace,
-      '--agent-id',
-      'codex',
       '--ports',
       '9',
       '--timeout-ms',
@@ -491,10 +408,9 @@ async function main() {
       designPrepare.fileKey,
       '--node-id',
       designPrepare.nodeId,
-      '--agent-id',
-      'codex',
     ])
 	    assert.equal(defaultHandoff.workflowPhase.phase, 'design_prepare')
+	    assert.equal(defaultHandoff.state.workId, sessionId(designPrepare.fileKey, designPrepare.nodeId))
 	    assert.equal(defaultHandoff.nextEvent, null)
 	    assert.equal(defaultHandoff.pendingEvents.length, 0)
 	    assert.equal(defaultHandoff.allPendingEvents.length, 0)
@@ -510,12 +426,10 @@ async function main() {
 	    assert.doesNotMatch(defaultHandoff.commands.prepareFirstRun, /CODEX_SHELL=1/)
 	    assert.doesNotMatch(defaultHandoff.commands.prepareFirstRun, /--no-open/)
 	    assert.doesNotMatch(defaultHandoff.commands.prepareFirstRun, /--silent/)
-	    assert.doesNotMatch(defaultHandoff.commands.waitNextEvent, /--agent-id/)
-	    assert.doesNotMatch(defaultHandoff.commands.setImplementationUrl, /--agent-id/)
 	    assert.equal(defaultHandoff.codexBrowserOpen.enabled, true)
 	    assert.equal(defaultHandoff.codexBrowserOpen.skill, 'browser:control-in-app-browser')
 	    assert.equal(defaultHandoff.codexBrowserOpen.target, 'iab')
-	    assert.equal(defaultHandoff.codexBrowserOpen.urlSource, 'commands.prepareFirstRun.codexHandoff.interceptorUrl')
+	    assert.equal(defaultHandoff.codexBrowserOpen.urlSource, 'commands.prepareFirstRun.interceptorUrl')
 	    assert.equal(defaultHandoff.codexBrowserOpen.afterOpen, 'poll-sloth-files')
 	    assert.match(defaultHandoff.commands.rawSlothD2c, /sloth.*d2c/)
 	    assert.match(defaultHandoff.commands.rawSlothD2c, /--silent/)
@@ -529,8 +443,6 @@ async function main() {
 	      designPrepare.fileKey,
 	      '--node-id',
 	      designPrepare.nodeId,
-	      '--agent-id',
-	      'codex',
 	      '--auto-grouping',
 	    ])
 	    assert.match(autoGroupingHandoff.commands.rawSlothD2c, /--auto-grouping/)
@@ -545,8 +457,6 @@ async function main() {
 	        designPrepare.fileKey,
 	        '--node-id',
 	        designPrepare.nodeId,
-	        '--agent-id',
-	        'codex',
 	      ],
 	      {
 	        env: {
@@ -560,7 +470,7 @@ async function main() {
 	    assert.match(prepared.command, /sloth.*d2c/)
 	    assert.equal(prepared.interceptorUrl, `http://localhost:3100/auth-page?token=sloth-d2c-test-token&fileKey=${designPrepare.fileKey}&nodeId=${designPrepare.nodeId}&mode=create`)
 	    assert.equal(prepared.codexBrowserOpen.url, prepared.interceptorUrl)
-	    assert.equal(prepared.codexBrowserOpen.urlSource, 'prepare-interceptor.codexHandoff.interceptorUrl')
+	    assert.equal(prepared.codexBrowserOpen.urlSource, 'interceptorUrl')
 	    assert.equal(prepared.pollPolicy.intervalSeconds, 10)
 	    assert.equal(prepared.pollPolicy.maxDurationSeconds, 180)
 	    assert.match(prepared.pollTargets.tasksDir, /tasks$/)
@@ -574,8 +484,6 @@ async function main() {
 	      designPrepare.fileKey,
 	      '--node-id',
 	      designPrepare.nodeId,
-	      '--agent-id',
-	      'codex',
 	    ])
 	    assert.equal(defaultGuide.guide[0].step, 'prepare-first-run')
 	    assert.equal(defaultGuide.guide[0].command, defaultHandoff.commands.prepareFirstRun)
@@ -594,8 +502,6 @@ async function main() {
 	      designPrepare.fileKey,
 	      '--node-id',
 	      designPrepare.nodeId,
-	      '--agent-id',
-	      'codex',
 	      '--silent',
 	    ])
 	    assert.equal(silentHandoff.interceptorMode, 'silent')
@@ -612,8 +518,6 @@ async function main() {
 	      designPrepare.fileKey,
 	      '--node-id',
 	      designPrepare.nodeId,
-	      '--agent-id',
-	      'codex',
 	      '--silent',
 	    ])
 	    assert.equal(silentGuide.mode, 'silent-first-run')
@@ -638,8 +542,6 @@ async function main() {
 	        submittedFirstRun.fileKey,
 	        '--node-id',
 	        submittedFirstRun.nodeId,
-	        '--agent-id',
-	        'codex',
 	      ])
 	      assert.equal(submittedHandoff.workflowPhase.phase, 'initial_generation_requested')
 	      assert.equal(submittedHandoff.workflowPhase.waitingFor, 'codex-initial-generation')
@@ -649,7 +551,7 @@ async function main() {
 	      assert.match(submittedHandoff.submission.path, /submission\.json$/)
 	      assert.match(submittedHandoff.recommendedAction, /submission\.json/)
 	      assert.equal(submittedHandoff.initialGeneration.mustRunSlothD2cBeforeCoding, true)
-	      await assert.rejects(fs.stat(loopDir(submittedFirstRun.workspace, submittedFirstRun.fileKey, submittedFirstRun.nodeId)), /ENOENT/)
+	      await assert.rejects(fs.stat(workDir(submittedFirstRun.workspace, submittedFirstRun.fileKey, submittedFirstRun.nodeId)), /ENOENT/)
 	    } finally {
 	      await fs.rm(submittedFirstRun.workspace, { recursive: true, force: true })
 	    }
@@ -664,12 +566,10 @@ async function main() {
       designPrepare.fileKey,
       '--node-id',
       designPrepare.nodeId,
-      '--agent-id',
-      'codex',
     ])
     assert.notEqual(new URL(repeatedHandoff.commands.openUrl).searchParams.get('token'), defaultToken)
     await assert.rejects(
-      fs.stat(path.join(loopDir(designPrepare.workspace, designPrepare.fileKey, designPrepare.nodeId), 'loop-token.json')),
+      fs.stat(path.join(workDir(designPrepare.workspace, designPrepare.fileKey, designPrepare.nodeId), 'work-token.json')),
       /ENOENT/,
     )
 
@@ -683,46 +583,10 @@ async function main() {
         otherDesignPrepare.fileKey,
         '--node-id',
         otherDesignPrepare.nodeId,
-        '--agent-id',
-        'codex',
       ])
       assert.notEqual(new URL(otherHandoff.commands.openUrl).searchParams.get('token'), defaultToken)
     } finally {
       await fs.rm(otherDesignPrepare.workspace, { recursive: true, force: true })
-    }
-
-    const tokenBridgeServers = await createTokenBridgeServers()
-    try {
-      const codexHandoff = await runCli(
-        [
-          'workflow-handoff',
-          '--workspace',
-          designPrepare.workspace,
-          '--file-key',
-          designPrepare.fileKey,
-          '--node-id',
-          designPrepare.nodeId,
-          '--agent-id',
-          'codex',
-          '--port',
-          String(tokenBridgeServers.port),
-        ],
-        {
-          env: {
-            SLOTH_DISABLE_CODEX_TOKEN_BRIDGE: '0',
-            CODEX_SHELL: '1',
-            CODEX_THREAD_ID: 'test-thread',
-          },
-        },
-	      )
-	      assert.equal(codexHandoff.codexTokenBridge.enabled, false)
-	      assert.equal(codexHandoff.codexTokenBridge.status, 'handled-by-prepare-first-run')
-	      assert.equal(tokenBridgeServers.registrations.length, 0)
-	      const bridgeLoopDir = loopDir(designPrepare.workspace, designPrepare.fileKey, designPrepare.nodeId)
-	      await assert.rejects(fs.stat(path.join(bridgeLoopDir, 'codex-token-bridge.json')), /ENOENT/)
-	      await assert.rejects(fs.stat(path.join(bridgeLoopDir, 'codex-token-bridge.log')), /ENOENT/)
-    } finally {
-      await tokenBridgeServers.close()
     }
 
     const handoff = await runCli([
@@ -733,8 +597,6 @@ async function main() {
       designPrepare.fileKey,
       '--node-id',
       designPrepare.nodeId,
-      '--agent-id',
-      'codex',
       '--dev-port',
       '59999',
     ])
@@ -756,8 +618,6 @@ async function main() {
       designPrepare.fileKey,
       '--node-id',
       designPrepare.nodeId,
-      '--agent-id',
-      'codex',
       '--dev-port',
       '59999',
 	    ])
@@ -770,6 +630,32 @@ async function main() {
 	  } finally {
 	    await fs.rm(designPrepare.workspace, { recursive: true, force: true })
 	  }
+
+  const invalidWork = await createDesignPrepareWorkspace()
+  try {
+    await writeJson(path.join(workDir(invalidWork.workspace, invalidWork.fileKey, invalidWork.nodeId), 'state.json'), {
+      fileKey: invalidWork.fileKey,
+      nodeId: invalidWork.nodeId,
+      currentVersion: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      handledEventIds: [],
+    })
+    await assert.rejects(
+      runCli([
+        'workflow-handoff',
+        '--workspace',
+        invalidWork.workspace,
+        '--file-key',
+        invalidWork.fileKey,
+        '--node-id',
+        invalidWork.nodeId,
+      ]),
+      /Invalid work state: missing workId/,
+    )
+  } finally {
+    await fs.rm(invalidWork.workspace, { recursive: true, force: true })
+  }
 
 }
 

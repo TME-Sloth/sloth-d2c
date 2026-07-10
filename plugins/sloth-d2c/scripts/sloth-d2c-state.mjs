@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { createRequire } from 'node:module'
-import { execFile, spawn } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
@@ -62,23 +62,13 @@ function sessionId(fileKey, nodeId) {
   return `${cleanPart(fileKey, 'file')}_${cleanPart(nodeId, 'root')}`
 }
 
-function loopDir(workspace, fileKey, nodeId) {
-  return path.join(d2cDir(workspace, fileKey, nodeId), 'loop')
+function workDir(workspace, fileKey, nodeId) {
+  return path.join(d2cDir(workspace, fileKey, nodeId), 'work')
 }
 
 function createWorkflowToken(args = {}) {
   if (args.token && args.token !== true) return String(args.token)
   return `sloth-d2c-${randomUUID()}`
-}
-
-function isCodexAppEnvironment(env = process.env) {
-  if (env.SLOTH_DISABLE_CODEX_TOKEN_BRIDGE === '1') return false
-  return (
-    env.CODEX_SHELL === '1' ||
-    Boolean(env.CODEX_THREAD_ID) ||
-    env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE === 'Codex Desktop' ||
-    env.__CFBundleIdentifier === 'com.openai.codex'
-  )
 }
 
 function d2cDir(workspace, fileKey, nodeId) {
@@ -157,14 +147,6 @@ function commandString(parts) {
   return parts.map((part) => shellQuote(part)).join(' ')
 }
 
-function visibleAgentArgs(agentId) {
-  return agentId && agentId !== 'codex' ? ['--agent-id', agentId] : []
-}
-
-function visibleShellAgentArgs(agentId) {
-  return visibleAgentArgs(agentId).map(shellQuote)
-}
-
 function normalizeUrl(value) {
   const raw = String(value || '').trim()
   if (!raw) return ''
@@ -203,7 +185,7 @@ function codexBrowserOpenContract({ phase, interceptorMode, url, urlSource = 'co
       'Do not open the generated implementation preview in this browser surface.',
       phase === 'design_prepare'
         ? 'After the interceptor is visible, poll the returned local task and submission paths for up to three minutes; do not submit or generate for the user.'
-        : 'Use this surface only for the Sloth workflow shell and annotation loop.',
+        : 'Use this surface only for the Sloth workflow shell and annotation work.',
     ],
   }
 }
@@ -318,8 +300,8 @@ function screenshotBackedHtml({ dataUrl, width, height, fileKey, nodeId, sourceU
 }
 
 async function appendEvent(workspace, fileKey, nodeId, event) {
-  await fs.mkdir(loopDir(workspace, fileKey, nodeId), { recursive: true })
-  await fs.appendFile(path.join(loopDir(workspace, fileKey, nodeId), 'events.jsonl'), `${JSON.stringify(event)}\n`, 'utf8')
+  await fs.mkdir(workDir(workspace, fileKey, nodeId), { recursive: true })
+  await fs.appendFile(path.join(workDir(workspace, fileKey, nodeId), 'events.jsonl'), `${JSON.stringify(event)}\n`, 'utf8')
 }
 
 async function seedFigmaSession(workspace, args) {
@@ -337,7 +319,7 @@ async function seedFigmaSession(workspace, args) {
   const dataUrl = `data:image/png;base64,${imageBytes.toString('base64')}`
   const groupsData = defaultSeedGroups(width, height)
   const targetD2cDir = d2cDir(workspace, fileKey, nodeId)
-  const targetLoopDir = loopDir(workspace, fileKey, nodeId)
+  const targetWorkDir = workDir(workspace, fileKey, nodeId)
   const now = new Date().toISOString()
   const snapshot = {
     snapshotId: 'v0001',
@@ -353,19 +335,19 @@ async function seedFigmaSession(workspace, args) {
     },
   }
   const state = {
-    sessionId: sessionId(fileKey, nodeId),
+    workId: sessionId(fileKey, nodeId),
     fileKey,
     nodeId,
     currentVersion: 1,
     createdAt: now,
     updatedAt: now,
     latestSnapshotId: 'v0001',
-    agents: {},
+    handledEventIds: [],
     seedSource: snapshot.source,
   }
   const event = {
     id: `evt_${Date.now()}_${Math.random().toString(16).slice(2)}`,
-    sessionId: sessionId(fileKey, nodeId),
+    workId: sessionId(fileKey, nodeId),
     version: 1,
     snapshotId: 'v0001',
     type: 'workflow.seeded',
@@ -380,7 +362,7 @@ async function seedFigmaSession(workspace, args) {
 
   await fs.mkdir(path.join(targetD2cDir, 'screenshots'), { recursive: true })
   await fs.mkdir(path.join(targetD2cDir, 'chunks'), { recursive: true })
-  await fs.mkdir(path.join(targetLoopDir, 'snapshots'), { recursive: true })
+  await fs.mkdir(path.join(targetWorkDir, 'snapshots'), { recursive: true })
   await fs.writeFile(path.join(targetD2cDir, 'screenshots', 'index.png'), imageBytes)
   await fs.writeFile(path.join(targetD2cDir, 'absolute.html'), screenshotBackedHtml({ dataUrl, width, height, fileKey, nodeId, sourceUrl: screenshotUrl }), 'utf8')
   await writeJson(path.join(targetD2cDir, 'groupsData.json'), groupsData)
@@ -389,23 +371,23 @@ async function seedFigmaSession(workspace, args) {
     `# Figma MCP seed\n\n${note}\n\n- fileKey: ${fileKey}\n- nodeId: ${nodeId || 'root'}\n- screenshot: screenshots/index.png\n- size: ${width}x${height}\n- groups: ${groupsData.length}\n`,
     'utf8',
   )
-  await writeJson(path.join(targetLoopDir, 'snapshots', 'v0001.json'), snapshot)
-  await writeJson(path.join(targetLoopDir, 'state.json'), state)
-  await fs.writeFile(path.join(targetLoopDir, 'events.jsonl'), '', 'utf8')
+  await writeJson(path.join(targetWorkDir, 'snapshots', 'v0001.json'), snapshot)
+  await writeJson(path.join(targetWorkDir, 'state.json'), state)
+  await fs.writeFile(path.join(targetWorkDir, 'events.jsonl'), '', 'utf8')
   await appendEvent(workspace, fileKey, nodeId, event)
 
   return {
     state,
     event,
     d2cDir: targetD2cDir,
-    loopDir: targetLoopDir,
+    workDir: targetWorkDir,
     groupsData,
     files: {
       absoluteHtml: path.join(targetD2cDir, 'absolute.html'),
       groupsData: path.join(targetD2cDir, 'groupsData.json'),
       screenshot: path.join(targetD2cDir, 'screenshots', 'index.png'),
-      snapshot: path.join(targetLoopDir, 'snapshots', 'v0001.json'),
-      state: path.join(targetLoopDir, 'state.json'),
+      snapshot: path.join(targetWorkDir, 'snapshots', 'v0001.json'),
+      state: path.join(targetWorkDir, 'state.json'),
     },
   }
 }
@@ -444,7 +426,7 @@ async function seedWorkbenchSession(workspace, args, implementationUrl = '') {
   const nodeId = workbenchNodeId(args)
   const now = new Date().toISOString()
   const targetD2cDir = d2cDir(workspace, fileKey, nodeId)
-  const targetLoopDir = loopDir(workspace, fileKey, nodeId)
+  const targetWorkDir = workDir(workspace, fileKey, nodeId)
   const snapshot = {
     snapshotId: 'v0001',
     version: 1,
@@ -460,14 +442,14 @@ async function seedWorkbenchSession(workspace, args, implementationUrl = '') {
     },
   }
   const state = {
-    sessionId: sessionId(fileKey, nodeId),
+    workId: sessionId(fileKey, nodeId),
     fileKey,
     nodeId,
     currentVersion: 1,
     createdAt: now,
     updatedAt: now,
     latestSnapshotId: 'v0001',
-    agents: {},
+    handledEventIds: [],
     workbench: {
       temporary: true,
       reason: snapshot.source.reason,
@@ -475,7 +457,7 @@ async function seedWorkbenchSession(workspace, args, implementationUrl = '') {
   }
   const event = {
     id: `evt_${Date.now()}_${Math.random().toString(16).slice(2)}`,
-    sessionId: sessionId(fileKey, nodeId),
+    workId: sessionId(fileKey, nodeId),
     version: 1,
     snapshotId: 'v0001',
     type: 'workbench.opened',
@@ -488,7 +470,7 @@ async function seedWorkbenchSession(workspace, args, implementationUrl = '') {
   }
 
   await fs.mkdir(path.join(targetD2cDir, 'chunks'), { recursive: true })
-  await fs.mkdir(path.join(targetLoopDir, 'snapshots'), { recursive: true })
+  await fs.mkdir(path.join(targetWorkDir, 'snapshots'), { recursive: true })
   await fs.writeFile(path.join(targetD2cDir, 'absolute.html'), workbenchHtml({ fileKey, nodeId, implementationUrl }), 'utf8')
   await writeJson(path.join(targetD2cDir, 'groupsData.json'), [])
   await fs.writeFile(
@@ -496,9 +478,9 @@ async function seedWorkbenchSession(workspace, args, implementationUrl = '') {
     `# Sloth Workbench\n\nTemporary session for prompt, component mapping, and implementation annotation workflows.\n\n- fileKey: ${fileKey}\n- nodeId: ${nodeId}\n- implementationUrl: ${implementationUrl || 'not connected'}\n`,
     'utf8',
   )
-  await writeJson(path.join(targetLoopDir, 'snapshots', 'v0001.json'), snapshot)
-  await writeJson(path.join(targetLoopDir, 'state.json'), state)
-  await fs.writeFile(path.join(targetLoopDir, 'events.jsonl'), '', 'utf8')
+  await writeJson(path.join(targetWorkDir, 'snapshots', 'v0001.json'), snapshot)
+  await writeJson(path.join(targetWorkDir, 'state.json'), state)
+  await fs.writeFile(path.join(targetWorkDir, 'events.jsonl'), '', 'utf8')
   await appendEvent(workspace, fileKey, nodeId, event)
 
   return {
@@ -507,12 +489,12 @@ async function seedWorkbenchSession(workspace, args, implementationUrl = '') {
     state,
     event,
     d2cDir: targetD2cDir,
-    loopDir: targetLoopDir,
+    workDir: targetWorkDir,
     files: {
       absoluteHtml: path.join(targetD2cDir, 'absolute.html'),
       groupsData: path.join(targetD2cDir, 'groupsData.json'),
-      state: path.join(targetLoopDir, 'state.json'),
-      snapshot: path.join(targetLoopDir, 'snapshots', 'v0001.json'),
+      state: path.join(targetWorkDir, 'state.json'),
+      snapshot: path.join(targetWorkDir, 'snapshots', 'v0001.json'),
     },
   }
 }
@@ -529,7 +511,7 @@ async function resolveImplementationSession(workspace, args, implementationUrl =
     const reasons = []
     if (targetComparableUrl && stateComparableUrl && targetComparableUrl === stateComparableUrl) {
       score += 100
-      reasons.push('implementationUrl matched existing loop state')
+      reasons.push('implementationUrl matched existing work state')
     } else if (targetComparableUrl) {
       continue
     } else if (!targetComparableUrl && state.implementationUrl) {
@@ -538,7 +520,7 @@ async function resolveImplementationSession(workspace, args, implementationUrl =
     }
     if (session.hasWorkflowState) {
       score += 10
-      reasons.push('loop state exists')
+      reasons.push('work state exists')
     }
     if (session.hasGroupsData) {
       score += 5
@@ -649,7 +631,7 @@ function askUserIntentResponse(workspace, resolution) {
   }
 }
 
-async function openInterceptor(workspace, args, agentId) {
+async function openInterceptor(workspace, args) {
   const explicitUrl = args.url && args.url !== true ? normalizeUrl(args.url) : ''
   const explicitFileKey = args['file-key'] && args['file-key'] !== true ? String(args['file-key']) : ''
   const explicitNodeId = args['node-id'] && args['node-id'] !== true ? String(args['node-id']) : undefined
@@ -740,22 +722,7 @@ async function openInterceptor(workspace, args, agentId) {
 
   const state = await getState(workspace, fileKey, nodeId)
   const openUrl = interceptorOpenUrlForSession(args, fileKey, nodeId)
-  const phase = state.implementationUrl ? 'implementation_loop' : 'workbench'
-  const codexTokenBridge =
-    openUrl && isCodexAppEnvironment() && !(args.token && args.token !== true)
-      ? await ensureCodexTokenBridge({
-          workspace,
-          fileKey,
-          nodeId,
-          host: String(args.host || 'localhost'),
-          port: String(args.port || '3100'),
-          token: new URL(openUrl).searchParams.get('token'),
-          agentId,
-        })
-      : {
-          enabled: false,
-          status: args.token && args.token !== true ? 'explicit-token' : isCodexAppEnvironment() ? 'no-open-url' : 'not-codex-app',
-        }
+  const phase = state.implementationUrl ? 'implementation_work' : 'workbench'
 
   return {
     ok: true,
@@ -785,7 +752,6 @@ async function openInterceptor(workspace, args, agentId) {
       urlSource: 'open-interceptor.interceptorUrl',
       afterOpen: state.implementationUrl ? 'wait-for-user-annotation' : 'workbench-open',
     }),
-    codexTokenBridge,
     recommendedAction: state.implementationUrl
       ? 'Open codexBrowserOpen.url in the Codex in-app browser. The interceptor can be used for implementation annotations, prompt tuning, and component mapping.'
       : 'Open codexBrowserOpen.url in the Codex in-app browser. No implementation URL is connected yet; use set-implementation-url when a preview URL is available.',
@@ -802,7 +768,6 @@ async function openInterceptor(workspace, args, agentId) {
         '--file-key',
         fileKey,
         ...(nodeId ? ['--node-id', nodeId] : []),
-        ...visibleAgentArgs(agentId),
         '--url',
         '<local implementation URL>',
       ]),
@@ -815,7 +780,6 @@ async function openInterceptor(workspace, args, agentId) {
         '--file-key',
         fileKey,
         ...(nodeId ? ['--node-id', nodeId] : []),
-        ...visibleAgentArgs(agentId),
       ]),
       waitNextEvent: commandString([
         'node',
@@ -826,7 +790,6 @@ async function openInterceptor(workspace, args, agentId) {
         '--file-key',
         fileKey,
         ...(nodeId ? ['--node-id', nodeId] : []),
-        ...visibleAgentArgs(agentId),
       ]),
     },
   }
@@ -926,7 +889,7 @@ async function findD2cSessions(workspace) {
       if (!nodeEntry.isDirectory()) continue
       const nodeId = nodeEntry.name
       const dir = path.join(fileDir, nodeId)
-      const statePath = path.join(loopDir(workspace, fileKey, nodeId), 'state.json')
+      const statePath = path.join(workDir(workspace, fileKey, nodeId), 'state.json')
       const key = sessionId(fileKey, nodeId)
       const dirStat = await fs.stat(dir).catch(() => null)
       sessionsByKey.set(key, {
@@ -946,34 +909,37 @@ async function findD2cSessions(workspace) {
 }
 
 async function getState(workspace, fileKey, nodeId) {
-  const dir = loopDir(workspace, fileKey, nodeId)
+  const dir = workDir(workspace, fileKey, nodeId)
+  const statePath = path.join(dir, 'state.json')
+  const existing = await readJson(statePath, null)
+  if (existing) {
+    if (!existing.workId) throw new Error(`Invalid work state: missing workId at ${statePath}`)
+    if (!Array.isArray(existing.handledEventIds)) throw new Error(`Invalid work state: missing handledEventIds at ${statePath}`)
+    return existing
+  }
   const createdAt = new Date().toISOString()
-  return readJson(path.join(dir, 'state.json'), {
-    sessionId: sessionId(fileKey, nodeId),
+  return {
+    workId: sessionId(fileKey, nodeId),
     fileKey,
     nodeId,
     currentVersion: 0,
     createdAt,
     updatedAt: createdAt,
-    agents: {},
-  })
+    handledEventIds: [],
+  }
 }
 
 async function saveState(workspace, state) {
-  await writeJson(path.join(loopDir(workspace, state.fileKey, state.nodeId), 'state.json'), state)
+  await writeJson(path.join(workDir(workspace, state.fileKey, state.nodeId), 'state.json'), state)
 }
 
-async function getPendingEvents(workspace, fileKey, nodeId, agentId, source = 'human') {
+async function getPendingEvents(workspace, fileKey, nodeId, source = 'human') {
   const state = await getState(workspace, fileKey, nodeId)
-  const progress = state.agents?.[agentId] || {
-    processedUntilVersion: 0,
-    processedEventIds: [],
-  }
-  const processed = new Set(progress.processedEventIds || [])
-  const events = await readJsonl(path.join(loopDir(workspace, fileKey, nodeId), 'events.jsonl'))
+  const handled = new Set(state.handledEventIds)
+  const events = await readJsonl(path.join(workDir(workspace, fileKey, nodeId), 'events.jsonl'))
   return {
     state,
-    events: events.filter((event) => event.source === source && !processed.has(event.id)),
+    events: events.filter((event) => event.source === source && !handled.has(event.id)),
   }
 }
 
@@ -1040,17 +1006,17 @@ function deriveWorkflowPhase(state, events, pendingEvents, submission = null) {
 
   if (pendingRepair) {
     return {
-      phase: 'legacy_repair_requested',
+      phase: 'repair_requested',
       waitingFor: 'codex-repair',
       eventId: pendingRepair.id,
-      description: 'A legacy repair event is pending. Codex should handle it through the focused event brief.',
+      description: 'A repair event is pending. Codex should handle it through the focused event brief.',
     }
   }
 
   return {
-    phase: 'implementation_loop',
+    phase: 'implementation_work',
     waitingFor: 'annotation.submitted',
-    description: 'The generated implementation is connected. Keep the interceptor in loop mode and wait for new generated-preview annotations.',
+    description: 'The generated implementation is connected. Keep the interceptor in work mode and wait for new generated-preview annotations.',
   }
 }
 
@@ -1112,111 +1078,6 @@ function buildInterceptorUrl({ host = 'localhost', port = '3100', fileKey, nodeI
   return url.toString()
 }
 
-async function validateMcpToken({ host, port, token, timeoutMs = 700 }) {
-  if (!token) return { valid: false, checked: false, reason: 'missing-token' }
-  try {
-    const url = new URL(`http://${host}:${port}/validateToken`)
-    url.searchParams.set('token', token)
-    const response = await fetch(url, {
-      signal: AbortSignal.timeout(timeoutMs),
-      headers: { accept: 'application/json' },
-    })
-    if (!response.ok) return { valid: false, checked: true, status: response.status }
-    const result = await response.json()
-    return { valid: Boolean(result?.valid), checked: true, status: response.status }
-  } catch (error) {
-    return {
-      valid: false,
-      checked: false,
-      reason: error instanceof Error ? error.message : String(error),
-    }
-  }
-}
-
-async function ensureCodexTokenBridge({ workspace, host, port, token, agentId }) {
-  const validation = await validateMcpToken({ host, port, token })
-  if (validation.valid) {
-    return {
-      enabled: true,
-      status: 'already-valid',
-      token,
-      validation,
-    }
-  }
-  if (validation.checked === false && validation.reason) {
-    return {
-      enabled: true,
-      status: 'unavailable',
-      token,
-      validation,
-    }
-  }
-
-  const socketPort = Number(port) + 1
-  const childSource = String.raw`
-const net = require('node:net');
-const token = process.env.SLOTH_CODEX_TOKEN;
-const host = process.env.SLOTH_CODEX_HOST || 'localhost';
-const socketPort = Number(process.env.SLOTH_CODEX_SOCKET_PORT || 3101);
-const extra = JSON.parse(process.env.SLOTH_CODEX_EXTRA || '{}');
-
-function finish(code) {
-  process.exit(code);
-}
-
-const socket = net.createConnection({ host, port: socketPort }, () => {
-  socket.write(JSON.stringify({ type: 'register-token', token, extra, timestamp: Date.now() }) + '\n');
-});
-
-socket.setEncoding('utf8');
-let buffer = '';
-socket.on('data', (chunk) => {
-  buffer += chunk;
-  const lines = buffer.split('\n');
-  buffer = lines.pop() || '';
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    try {
-      const message = JSON.parse(line);
-      if (message.type === 'submit-response' && message.token === token) finish(0);
-    } catch {}
-  }
-});
-socket.on('error', (error) => {
-  finish(1);
-});
-socket.on('close', () => {
-  finish(0);
-});
-setInterval(() => {
-  try { socket.write(JSON.stringify({ type: 'ping', timestamp: Date.now() }) + '\n'); } catch {}
-}, 30000);
-`
-  const child = spawn(process.execPath, ['-e', childSource], {
-    detached: true,
-    stdio: 'ignore',
-    env: {
-      ...process.env,
-      SLOTH_CODEX_TOKEN: token,
-      SLOTH_CODEX_HOST: host,
-      SLOTH_CODEX_SOCKET_PORT: String(socketPort),
-      SLOTH_CODEX_EXTRA: JSON.stringify({
-        workspaceRoot: workspace,
-        source: 'codex-app-sloth-workflow',
-        agentId,
-      }),
-    },
-  })
-  child.unref()
-  return {
-    enabled: true,
-    status: 'started',
-    token,
-    pid: child.pid,
-    validation,
-  }
-}
-
 async function firstReachableInterceptorUrl(candidates) {
   for (const candidate of candidates) {
     const url = buildInterceptorUrl(candidate)
@@ -1232,13 +1093,13 @@ async function firstReachableInterceptorUrl(candidates) {
   return null
 }
 
-async function workflowStatus(workspace, args, agentId) {
+async function workflowStatus(workspace, args) {
   const selected = await resolveSession(workspace, args)
   const fileKey = selected.fileKey
   const nodeId = selected.nodeId
-  const pending = await getPendingEvents(workspace, fileKey, nodeId, agentId, args.source ? String(args.source) : 'human')
+  const pending = await getPendingEvents(workspace, fileKey, nodeId, args.source ? String(args.source) : 'human')
   const state = await getState(workspace, fileKey, nodeId)
-  const events = await readJsonl(path.join(loopDir(workspace, fileKey, nodeId), 'events.jsonl'))
+  const events = await readJsonl(path.join(workDir(workspace, fileKey, nodeId), 'events.jsonl'))
   const submission = await readSubmission(workspace, fileKey, nodeId)
   const actionablePendingEvents = pending.events.filter(isActionableWorkflowEvent)
   const workflowPhase = deriveWorkflowPhase(state, events, actionablePendingEvents, submission)
@@ -1327,8 +1188,8 @@ async function workflowStatus(workspace, args, agentId) {
   }
 }
 
-async function nextEventContext(workspace, args, agentId) {
-  const status = await workflowStatus(workspace, args, agentId)
+async function nextEventContext(workspace, args) {
+  const status = await workflowStatus(workspace, args)
   const event = status.pendingEvents[0]
   if (!event) {
     return {
@@ -1344,28 +1205,14 @@ async function nextEventContext(workspace, args, agentId) {
   }
 }
 
-async function ackEvents(workspace, fileKey, nodeId, agentId, eventIds) {
+async function ackEvents(workspace, fileKey, nodeId, eventIds) {
   const state = await getState(workspace, fileKey, nodeId)
-  const events = await readJsonl(path.join(loopDir(workspace, fileKey, nodeId), 'events.jsonl'))
-  const acknowledged = events.filter((event) => eventIds.includes(event.id))
-  const previous = state.agents?.[agentId] || {
-    processedUntilVersion: 0,
-    processedEventIds: [],
-    updatedAt: state.createdAt,
-  }
   const nextState = {
     ...state,
     updatedAt: new Date().toISOString(),
-    agents: {
-      ...(state.agents || {}),
-      [agentId]: {
-        processedUntilVersion: Math.max(previous.processedUntilVersion || 0, ...acknowledged.map((event) => Number(event.version || 0)), 0),
-        processedEventIds: Array.from(new Set([...(previous.processedEventIds || []), ...eventIds])),
-        updatedAt: new Date().toISOString(),
-      },
-    },
+    handledEventIds: Array.from(new Set([...state.handledEventIds, ...eventIds])),
   }
-  await writeJson(path.join(loopDir(workspace, fileKey, nodeId), 'state.json'), nextState)
+  await writeJson(path.join(workDir(workspace, fileKey, nodeId), 'state.json'), nextState)
   return nextState
 }
 
@@ -1374,7 +1221,7 @@ async function appendAgentEvent(workspace, fileKey, nodeId, type, payload) {
   const version = Number(state.currentVersion || 0)
   const event = {
     id: `evt_${Date.now()}_${Math.random().toString(16).slice(2)}`,
-    sessionId: sessionId(fileKey, nodeId),
+    workId: sessionId(fileKey, nodeId),
     version,
     snapshotId: state.latestSnapshotId,
     type,
@@ -1382,13 +1229,13 @@ async function appendAgentEvent(workspace, fileKey, nodeId, type, payload) {
     payload,
     createdAt: new Date().toISOString(),
   }
-  await fs.mkdir(loopDir(workspace, fileKey, nodeId), { recursive: true })
-  await fs.appendFile(path.join(loopDir(workspace, fileKey, nodeId), 'events.jsonl'), `${JSON.stringify(event)}\n`, 'utf8')
+  await fs.mkdir(workDir(workspace, fileKey, nodeId), { recursive: true })
+  await fs.appendFile(path.join(workDir(workspace, fileKey, nodeId), 'events.jsonl'), `${JSON.stringify(event)}\n`, 'utf8')
   const nextState = {
     ...state,
     updatedAt: event.createdAt,
   }
-  await writeJson(path.join(loopDir(workspace, fileKey, nodeId), 'state.json'), nextState)
+  await writeJson(path.join(workDir(workspace, fileKey, nodeId), 'state.json'), nextState)
   return { state: nextState, event }
 }
 
@@ -1494,10 +1341,10 @@ async function clearImplementationUrl(workspace, args) {
   }
 }
 
-async function completeEvent(workspace, fileKey, nodeId, agentId, args) {
+async function completeEvent(workspace, fileKey, nodeId, args) {
   const eventIds = optionalList(args, 'event-ids')
   if (!eventIds.length) throw new Error('Missing required --event-ids')
-  const before = await getPendingEvents(workspace, fileKey, nodeId, agentId)
+  const before = await getPendingEvents(workspace, fileKey, nodeId)
   const handledEvents = before.events.filter((event) => eventIds.includes(event.id))
   const basePayload = args['payload-json'] ? JSON.parse(String(args['payload-json'])) : {}
   const payload = {
@@ -1525,8 +1372,8 @@ async function completeEvent(workspace, fileKey, nodeId, agentId, args) {
   if (args['visual-diffs-json']) payload.visualDiffs = JSON.parse(String(args['visual-diffs-json']))
 
   const result = await appendAgentEvent(workspace, fileKey, nodeId, String(args.type || 'agent.result'), payload)
-  const state = await ackEvents(workspace, fileKey, nodeId, agentId, eventIds)
-  const after = await getPendingEvents(workspace, fileKey, nodeId, agentId)
+  const state = await ackEvents(workspace, fileKey, nodeId, eventIds)
+  const after = await getPendingEvents(workspace, fileKey, nodeId)
   return {
     ...result,
     acknowledgedEventIds: eventIds,
@@ -1537,8 +1384,8 @@ async function completeEvent(workspace, fileKey, nodeId, agentId, args) {
   }
 }
 
-async function claimEvent(workspace, fileKey, nodeId, agentId, args) {
-  const pending = await getPendingEvents(workspace, fileKey, nodeId, agentId)
+async function claimEvent(workspace, fileKey, nodeId, args) {
+  const pending = await getPendingEvents(workspace, fileKey, nodeId)
   const eventIds = optionalList(args, 'event-ids')
   const targetEventIds = eventIds.length ? eventIds : pending.events[0] ? [pending.events[0].id] : []
   if (!targetEventIds.length) throw new Error('Missing --event-ids and no pending events were found.')
@@ -1804,19 +1651,15 @@ async function runSlothD2cAtomicCommand(workspace, fileKey, nodeId, framework, a
   throw new Error(`sloth d2c failed. ${detail}`)
 }
 
-async function ensureInitialChunks(workspace, args, agentId) {
+async function ensureInitialChunks(workspace, args) {
   const selected = await resolveSession(workspace, args)
   const fileKey = selected.fileKey
   const nodeId = selected.nodeId
-  const status = await workflowStatus(
-    workspace,
-    {
-      ...args,
-      'file-key': fileKey,
-      'node-id': nodeId,
-    },
-    agentId,
-  )
+  const status = await workflowStatus(workspace, {
+    ...args,
+    'file-key': fileKey,
+    'node-id': nodeId,
+  })
   const eventId = args['event-id'] ? String(args['event-id']) : status.pendingEvents[0]?.id
   const context = eventId ? await eventContext(workspace, fileKey, nodeId, eventId) : null
   const expectedGroupCount = Array.isArray(context?.groups) && context.groups.length ? context.groups.length : context?.snapshot?.groupCount || 0
@@ -1956,7 +1799,7 @@ async function groupScreenshots(workspace, fileKey, nodeId, groups) {
 
 async function readSnapshot(workspace, fileKey, nodeId, snapshotId) {
   if (!snapshotId) return null
-  return readJson(path.join(loopDir(workspace, fileKey, nodeId), 'snapshots', `${snapshotId}.json`), null)
+  return readJson(path.join(workDir(workspace, fileKey, nodeId), 'snapshots', `${snapshotId}.json`), null)
 }
 
 function eventGroupIndices(event) {
@@ -1996,7 +1839,7 @@ function eventCanvasAnnotationSummaries(event) {
 
 async function eventContext(workspace, fileKey, nodeId, eventId) {
   const state = await getState(workspace, fileKey, nodeId)
-  const events = await readJsonl(path.join(loopDir(workspace, fileKey, nodeId), 'events.jsonl'))
+  const events = await readJsonl(path.join(workDir(workspace, fileKey, nodeId), 'events.jsonl'))
   const event = events.find((item) => item.id === eventId)
   if (!event) throw new Error(`Event not found: ${eventId}`)
 
@@ -2052,17 +1895,13 @@ async function eventContext(workspace, fileKey, nodeId, eventId) {
   }
 }
 
-async function eventBrief(workspace, args, agentId) {
+async function eventBrief(workspace, args) {
   const selected = await resolveSession(workspace, args)
-  const status = await workflowStatus(
-    workspace,
-    {
-      ...args,
-      'file-key': selected.fileKey,
-      'node-id': selected.nodeId,
-    },
-    agentId,
-  )
+  const status = await workflowStatus(workspace, {
+    ...args,
+    'file-key': selected.fileKey,
+    'node-id': selected.nodeId,
+  })
   const eventId = args['event-id'] ? String(args['event-id']) : status.pendingEvents[0]?.id
   if (!eventId) {
     return {
@@ -2101,7 +1940,6 @@ async function eventBrief(workspace, args, agentId) {
     '--file-key',
     shellQuote(selected.fileKey),
     ...(selected.nodeId ? ['--node-id', shellQuote(selected.nodeId)] : []),
-    ...visibleShellAgentArgs(agentId),
     '--event-ids',
     shellQuote(eventId),
     '--summary',
@@ -2116,7 +1954,6 @@ async function eventBrief(workspace, args, agentId) {
     '--file-key',
     shellQuote(selected.fileKey),
     ...(selected.nodeId ? ['--node-id', shellQuote(selected.nodeId)] : []),
-    ...visibleShellAgentArgs(agentId),
     '--event-ids',
     shellQuote(eventId),
     '--summary',
@@ -2169,12 +2006,12 @@ async function eventBrief(workspace, args, agentId) {
   }
 }
 
-async function repairBrief(workspace, args, agentId) {
-  return eventBrief(workspace, args, agentId)
+async function repairBrief(workspace, args) {
+  return eventBrief(workspace, args)
 }
 
-async function annotationWorkflow(workspace, args, agentId) {
-  const brief = await eventBrief(workspace, args, agentId)
+async function annotationWorkflow(workspace, args) {
+  const brief = await eventBrief(workspace, args)
   const event = brief.eventBrief?.event
   if (!event) {
     return {
@@ -2206,17 +2043,13 @@ async function annotationWorkflow(workspace, args, agentId) {
   }
 }
 
-async function designDiff(workspace, args, agentId) {
+async function designDiff(workspace, args) {
   const selected = await resolveSession(workspace, args)
-  const status = await workflowStatus(
-    workspace,
-    {
-      ...args,
-      'file-key': selected.fileKey,
-      'node-id': selected.nodeId,
-    },
-    agentId,
-  )
+  const status = await workflowStatus(workspace, {
+    ...args,
+    'file-key': selected.fileKey,
+    'node-id': selected.nodeId,
+  })
   const root = d2cDir(workspace, selected.fileKey, selected.nodeId)
   const screenshots = await screenshotInventory(workspace, selected.fileKey, selected.nodeId)
   const baseline = args.baseline && args.baseline !== true ? path.resolve(workspace, String(args.baseline)) : screenshots.pageScreenshot?.path || path.join(root, 'screenshots', 'index.png')
@@ -2279,8 +2112,8 @@ async function designDiff(workspace, args, agentId) {
   }
 }
 
-async function workflowHandoff(workspace, args, agentId) {
-  const status = await workflowStatus(workspace, args, agentId)
+async function workflowHandoff(workspace, args) {
+  const status = await workflowStatus(workspace, args)
   const slothCli = await resolveSlothCliStatus()
   const fileKey = status.selected.fileKey
   const nodeId = status.selected.nodeId
@@ -2290,7 +2123,6 @@ async function workflowHandoff(workspace, args, agentId) {
     '--file-key',
     fileKey,
     ...(nodeId ? ['--node-id', nodeId] : []),
-    ...visibleAgentArgs(agentId),
   ]
   const portArgs = [
     ...(args.port && args.port !== true ? ['--port', String(args.port)] : []),
@@ -2298,44 +2130,17 @@ async function workflowHandoff(workspace, args, agentId) {
   ]
   const firstPending = status.pendingEvents[0]
   const firstBrief = firstPending
-    ? (await eventBrief(
-        workspace,
-        {
-          ...args,
-          'file-key': fileKey,
-          'node-id': nodeId,
-          'event-id': firstPending.id,
-        },
-        agentId,
-      )).eventBrief
+    ? (await eventBrief(workspace, {
+        ...args,
+        'file-key': fileKey,
+        'node-id': nodeId,
+        'event-id': firstPending.id,
+      })).eventBrief
     : null
   const phase = status.workflowPhase?.phase || 'design_prepare'
   const skipInterceptor = shouldSkipInterceptor(args)
   const shouldStartDevInterceptor = phase === 'design_prepare' && status.devMode && !status.devInterceptorUrl && !skipInterceptor
   const openUrl = shouldStartDevInterceptor ? null : status.preferredInterceptorUrl || status.devInterceptorUrl || status.interceptorUrl
-  const explicitToken = args.token && args.token !== true ? String(args.token) : ''
-  const shouldBridgeOpenUrl = phase !== 'design_prepare' && openUrl && isCodexAppEnvironment() && !explicitToken
-  const codexTokenBridge =
-    shouldBridgeOpenUrl
-      ? await ensureCodexTokenBridge({
-          workspace,
-          fileKey,
-          nodeId,
-          host: String(args.host || 'localhost'),
-          port: String(args.port || '3100'),
-          token: new URL(openUrl).searchParams.get('token'),
-          agentId,
-        })
-      : {
-          enabled: false,
-          status: explicitToken
-            ? 'explicit-token'
-            : phase === 'design_prepare'
-              ? 'handled-by-prepare-first-run'
-              : isCodexAppEnvironment()
-                ? 'no-open-url'
-                : 'not-codex-app',
-        }
   const submittedGroupCount =
     firstBrief && Array.isArray(firstBrief.groups)
       ? firstBrief.groups.length
@@ -2370,22 +2175,22 @@ async function workflowHandoff(workspace, args, agentId) {
     design_prepare: skipInterceptor
       ? 'Run commands.rawSlothD2c (or commands.generateChunks when chunks are incomplete) to fetch design data and generate chunk prompts silently. Do not open the interceptor or wait for submission.json. After codeAggregation.md and finalGenerate.md exist, continue directly to first implementation generation in the same turn; numeric group chunks are optional.'
       : shouldStartDevInterceptor
-      ? 'Start the Sloth workflow dev launcher, rerun workflow-handoff, then run commands.prepareFirstRun. Open the returned codexHandoff.interceptorUrl in the Codex in-app browser and poll tasks/subAgentTask-*.md plus submission.json about every 10 seconds for up to 3 minutes. Do not click Submit/Generate or trigger the form for the user. Use shell open/system default browser/Chrome only if the Codex in-app browser is unavailable or control fails.'
-      : 'Run commands.prepareFirstRun first. It runs sloth d2c in Codex handoff mode to prepare REST/local design data without opening Chrome or blocking for submit. Then open the returned codexHandoff.interceptorUrl in the Codex in-app browser and poll tasks/subAgentTask-*.md plus submission.json about every 10 seconds for up to 3 minutes. Handle tasks as they appear and continue first generation immediately when submission.json is submitted. Do not inspect controls and submit on the user’s behalf.',
+      ? 'Start the Sloth workflow dev launcher, rerun workflow-handoff, then run commands.prepareFirstRun. Open the returned interceptorUrl in the Codex in-app browser and poll tasks/subAgentTask-*.md plus submission.json about every 10 seconds for up to 3 minutes. Do not click Submit/Generate or trigger the form for the user. Use shell open/system default browser/Chrome only if the Codex in-app browser is unavailable or control fails.'
+      : 'Run commands.prepareFirstRun first. It runs sloth d2c in interactive handoff mode to prepare REST/local design data without opening Chrome or blocking for submit. Then open the returned interceptorUrl in the Codex in-app browser and poll tasks/subAgentTask-*.md plus submission.json about every 10 seconds for up to 3 minutes. Handle tasks as they appear and continue first generation immediately when submission.json is submitted. Do not inspect controls and submit on the user’s behalf.',
     initial_generation_requested: skipInterceptor
       ? initialChunkStatus.needsSlothD2c
-        ? 'Before writing implementation code, run commands.rawSlothD2c or commands.generateChunks to refresh chunk prompts. Do not open the interceptor. Follow numeric group chunks when present, then codeAggregation.md and finalGenerate.md, create real project components/styles/assets, start the target app preview, write implementationUrl if loop mode is still needed later, capture an implementation screenshot, and compare it against screenshots/index.png with agent visual review. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.'
-        : 'Follow the existing Sloth D2C prompts: numeric group chunks when present, then codeAggregation.md and finalGenerate.md. Generate real project components/styles/assets, start the target app preview, write implementationUrl if loop mode is still needed later, capture an implementation screenshot, and compare it against screenshots/index.png with agent visual review. Do not open the interceptor during first generation. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.'
+        ? 'Before writing implementation code, run commands.rawSlothD2c or commands.generateChunks to refresh chunk prompts. Do not open the interceptor. Follow numeric group chunks when present, then codeAggregation.md and finalGenerate.md, create real project components/styles/assets, start the target app preview, write implementationUrl if work mode is still needed later, capture an implementation screenshot, and compare it against screenshots/index.png with agent visual review. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.'
+        : 'Follow the existing Sloth D2C prompts: numeric group chunks when present, then codeAggregation.md and finalGenerate.md. Generate real project components/styles/assets, start the target app preview, write implementationUrl if work mode is still needed later, capture an implementation screenshot, and compare it against screenshots/index.png with agent visual review. Do not open the interceptor during first generation. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.'
       : initialChunkStatus.needsSlothD2c
       ? 'Before writing implementation code, use submission.json as the first-run gate and run the sloth d2c atomic command to generate chunks/prompts from the submitted configuration. Do not hand-write the initial implementation from screenshots while chunks are missing. Follow numeric group chunks when present, then codeAggregation.md and finalGenerate.md, create real project components/styles/assets, start the target app preview, write implementationUrl, capture an implementation screenshot, compare it against screenshots/index.png with agent visual review, and keep or reopen the Sloth interceptor in the Codex in-app browser. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.'
       : 'Use submission.json as the first-run gate, then follow existing Sloth D2C prompts: numeric group chunks when present, then codeAggregation.md and finalGenerate.md. Generate real project components/styles/assets, start the target app preview, write implementationUrl, capture an implementation screenshot, compare it against screenshots/index.png with agent visual review, and keep or reopen the Sloth interceptor in the Codex in-app browser. Do not navigate the in-app browser directly to the target preview URL. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.',
     initial_generating: skipInterceptor
-      ? 'Continue the silent first generation path until a reachable implementation preview URL is available, then write implementationUrl if loop mode is still needed later, capture an implementation screenshot, and compare it against screenshots/index.png with agent visual review. Do not open the interceptor during first generation.'
-      : 'Continue the first generation path until a reachable implementation preview URL is available, then write implementationUrl so the interceptor can enter loop mode. Capture an implementation screenshot and compare it against screenshots/index.png with agent visual review. Keep the Codex in-app browser on the Sloth interceptor.',
-    implementation_loop: 'Open the interceptor loop page and wait for the user to save generated-preview annotations.',
+      ? 'Continue the silent first generation path until a reachable implementation preview URL is available, then write implementationUrl if work mode is still needed later, capture an implementation screenshot, and compare it against screenshots/index.png with agent visual review. Do not open the interceptor during first generation.'
+      : 'Continue the first generation path until a reachable implementation preview URL is available, then write implementationUrl so the interceptor can enter work mode. Capture an implementation screenshot and compare it against screenshots/index.png with agent visual review. Keep the Codex in-app browser on the Sloth interceptor.',
+    implementation_work: 'Open the interceptor work page and wait for the user to save generated-preview annotations.',
     implementation_annotations_requested: 'Handle the returned generated-preview annotation eventBrief, edit code, run checks, then run complete-event.',
     design_diff_requested: 'Handle the returned design diff eventBrief, compare the design and implementation, edit code, run checks, then run complete-event.',
-    legacy_repair_requested: 'Handle the returned legacy repair eventBrief, edit code, run checks, then run complete-event.',
+    repair_requested: 'Handle the returned repair eventBrief, edit code, run checks, then run complete-event.',
   }
   const autoGroupingRecommendedAction = autoGroupingStatus.requiresAutoGrouping
     ? `Before generating chunks or implementation code, dispatch a focused subagent to read ${autoGroupingStatus.taskPath} and write ${autoGroupingStatus.groupsDataPath}. After it validates groupsData.json, rerun ${autoGroupingStatus.rerunCommand || 'commands.rawSlothD2c'} to generate chunks, then follow numeric group chunks when present, codeAggregation.md, and finalGenerate.md. Keep the auto-grouping task body out of the main context except for the final groupsData summary.`
@@ -2400,7 +2205,7 @@ async function workflowHandoff(workspace, args, agentId) {
     phase,
     interceptorMode: skipInterceptor ? 'silent' : 'interactive',
     url: openUrl,
-    urlSource: phase === 'design_prepare' ? 'commands.prepareFirstRun.codexHandoff.interceptorUrl' : 'commands.openUrl',
+    urlSource: phase === 'design_prepare' ? 'commands.prepareFirstRun.interceptorUrl' : 'commands.openUrl',
     afterOpen:
       phase === 'design_prepare'
         ? 'poll-sloth-files'
@@ -2423,7 +2228,6 @@ async function workflowHandoff(workspace, args, agentId) {
       mustRunSlothD2cBeforeCoding: phase === 'initial_generation_requested' && initialChunkStatus.needsSlothD2c && !autoGroupingStatus.requiresAutoGrouping,
     },
     codexBrowserOpen,
-    codexTokenBridge,
     stopCondition: !slothCli.available
       ? 'Install Sloth CLI, verify with commands.verifySloth, then rerun workflow-handoff.'
       : phase === 'design_prepare'
@@ -2527,8 +2331,8 @@ async function workflowHandoff(workspace, args, agentId) {
   }
 }
 
-async function prepareInterceptor(workspace, args, agentId) {
-  const handoff = await workflowHandoff(workspace, args, agentId)
+async function prepareInterceptor(workspace, args) {
+  const handoff = await workflowHandoff(workspace, args)
   const phase = handoff.workflowPhase?.phase || 'design_prepare'
 
   if (handoff.slothCli?.available === false) {
@@ -2613,9 +2417,8 @@ async function prepareInterceptor(workspace, args, agentId) {
   }
 
   const parsed = parseJsonCommandOutput(run.stdout)
-  const codexHandoff = parsed?.codexHandoff || null
-  const interceptorUrl = codexHandoff?.interceptorUrl || parsed?.interceptorUrl || ''
-  if (!interceptorUrl) {
+  const interceptorUrl = parsed?.interceptorUrl || ''
+  if (!interceptorUrl || !parsed?.pollTargets || !parsed?.pollPolicy || !parsed?.commands) {
     return {
       ok: false,
       mode: 'prepare-interceptor',
@@ -2624,7 +2427,7 @@ async function prepareInterceptor(workspace, args, agentId) {
       command,
       stdoutPreview: previewOutput(run.stdout),
       stderrPreview: previewOutput(run.stderr),
-      message: 'Sloth first-run preparation did not return codexHandoff.interceptorUrl.',
+      message: 'Sloth first-run preparation did not return the unified interceptor handoff fields.',
     }
   }
 
@@ -2636,44 +2439,35 @@ async function prepareInterceptor(workspace, args, agentId) {
     workflowPhase: handoff.workflowPhase,
     command,
     interceptorUrl,
-    codexHandoff: {
-      prepared: codexHandoff?.prepared,
-      reason: codexHandoff?.reason,
-      d2cDir: codexHandoff?.d2cDir,
-      copiedFiles: codexHandoff?.copiedFiles,
-      bridge: codexHandoff?.bridge,
-    },
-    codexBrowserOpen: codexBrowserOpenContract({
-      phase,
-      interceptorMode: 'interactive',
-      url: interceptorUrl,
-      urlSource: 'prepare-interceptor.codexHandoff.interceptorUrl',
-      afterOpen: 'poll-sloth-files',
-    }),
-    pollTargets: {
-      tasksDir: path.join(d2cDir(workspace, fileKey, nodeId), 'tasks'),
-      submissionPath: submissionPath(workspace, fileKey, nodeId),
-    },
-    pollPolicy: {
-      intervalSeconds: 10,
-      maxDurationSeconds: 180,
-      onTask: 'handle_task_then_resume_polling',
-      onSubmission: 'continue_initial_generation',
-      onTimeout: 'return_to_user_waiting_for_submission',
-    },
+    prepared: parsed.prepared,
+    reason: parsed.reason,
+    d2cDir: parsed.d2cDir,
+    copiedFiles: parsed.copiedFiles,
+    commands: parsed.commands,
+    codexBrowserOpen:
+      parsed.codexBrowserOpen ||
+      codexBrowserOpenContract({
+        phase,
+        interceptorMode: 'interactive',
+        url: interceptorUrl,
+        urlSource: 'prepare-interceptor.interceptorUrl',
+        afterOpen: 'poll-sloth-files',
+      }),
+    pollTargets: parsed.pollTargets,
+    pollPolicy: parsed.pollPolicy,
     stopCondition:
       'Stop waiting only after pollPolicy.maxDurationSeconds elapses without a submitted submission.json or a pending task.',
-    forbidden: ['submit_interceptor', 'generate_code_before_submission', 'write_implementation_url_before_generation'],
+    forbidden: parsed.forbidden,
   }
 }
 
-async function workflowGuide(workspace, args, agentId) {
-  const handoff = await workflowHandoff(workspace, args, agentId)
+async function workflowGuide(workspace, args) {
+  const handoff = await workflowHandoff(workspace, args)
   const hasPendingEvent = Boolean(handoff.nextEvent)
   const phase = handoff.workflowPhase?.phase || 'design_prepare'
   const isFirstRunWaiting = phase === 'design_prepare'
   const isInitialGeneration = phase === 'initial_generation_requested' || phase === 'initial_generating'
-  const isLoopWaiting = phase === 'implementation_loop'
+  const isWorkWaiting = phase === 'implementation_work'
   const needsDevInterceptor = isFirstRunWaiting && !handoff.commands.openUrl
   const needsInitialChunks = Boolean(handoff.initialGeneration?.mustRunSlothD2cBeforeCoding)
   const needsSlothCliInstall = handoff.slothCli?.available === false
@@ -2707,12 +2501,12 @@ async function workflowGuide(workspace, args, agentId) {
         action: skipInterceptor && isFirstRunWaiting
           ? 'Run commands.firstRun to generate chunks/prompts silently, then continue directly to first implementation generation. Do not open the interceptor or wait for submission.json.'
           : needsDevInterceptor
-          ? 'Start the Sloth workflow dev launcher, rerun workflow-handoff, then run commands.prepareFirstRun. Open the returned codexHandoff.interceptorUrl in the Codex in-app browser, then poll local tasks and submission state for up to 3 minutes. Do not click Submit/Generate or trigger the form. Use shell open/system default browser/Chrome only if the Codex in-app browser is unavailable or control fails.'
+          ? 'Start the Sloth workflow dev launcher, rerun workflow-handoff, then run commands.prepareFirstRun. Open the returned interceptorUrl in the Codex in-app browser, then poll local tasks and submission state for up to 3 minutes. Do not click Submit/Generate or trigger the form. Use shell open/system default browser/Chrome only if the Codex in-app browser is unavailable or control fails.'
           : isInitialGeneration
           ? skipInterceptor
             ? 'Generate the first implementation directly from chunks/prompts. Do not open the interceptor during first generation.'
             : 'Keep the existing Sloth interceptor open while Codex performs the first generation.'
-          : 'Run commands.prepareFirstRun to prepare design data, then open the returned codexHandoff.interceptorUrl in the Codex in-app browser, then poll local tasks and submission state for up to 3 minutes. Do not click Submit/Generate or trigger the form. Use shell open/system default browser/Chrome only if the Codex in-app browser is unavailable or control fails.',
+          : 'Run commands.prepareFirstRun to prepare design data, then open the returned interceptorUrl in the Codex in-app browser, then poll local tasks and submission state for up to 3 minutes. Do not click Submit/Generate or trigger the form. Use shell open/system default browser/Chrome only if the Codex in-app browser is unavailable or control fails.',
         url: skipInterceptor && isFirstRunWaiting ? null : handoff.commands.openUrl,
         codexBrowserOpen: handoff.codexBrowserOpen,
         command: skipInterceptor && isFirstRunWaiting
@@ -2727,7 +2521,7 @@ async function workflowGuide(workspace, args, agentId) {
           : needsDevInterceptor
           ? 'workflow-handoff returns commands.openUrl.'
           : isFirstRunWaiting
-            ? 'commands.prepareFirstRun returns ok=true with codexHandoff.interceptorUrl, and that URL is open in the Codex in-app browser.'
+            ? 'commands.prepareFirstRun returns ok=true with interceptorUrl, and that URL is open in the Codex in-app browser.'
             : 'The browser shows Sloth D2C 工作台 and the header session version matches this state.',
       },
       {
@@ -2747,7 +2541,7 @@ async function workflowGuide(workspace, args, agentId) {
             ? skipInterceptor
               ? 'Continue first implementation generation from chunks/prompts in the same turn. Do not open the interceptor.'
               : 'Poll tasks/subAgentTask-*.md and submission.json about every 10 seconds for up to 3 minutes. Handle pending tasks and resume polling; continue initial generation immediately when submission.json is submitted. Return to the user only after the polling window expires.'
-            : isLoopWaiting
+            : isWorkWaiting
               ? 'Wait specifically for annotation.submitted from generated-preview annotations.'
               : 'Wait for the next actionable workflow event.',
         command: hasPendingEvent
@@ -2804,13 +2598,13 @@ async function workflowGuide(workspace, args, agentId) {
             ? null
             : handoff.commands.completeEventTemplate,
         doneWhen: isInitialGeneration
-          ? 'implementationUrl has been written; loop state starts after that point.'
+          ? 'implementationUrl has been written; work state starts after that point.'
           : isFirstRunWaiting
           ? 'No completion action is needed in design_prepare.'
-          : 'complete-event returns remainingPendingCount. Continue the loop if it is greater than 0.',
+          : 'complete-event returns remainingPendingCount. Continue the work if it is greater than 0.',
       },
       {
-        step: 'loop',
+        step: 'work',
         status: 'ready',
         action: 'Run workflow-handoff again after complete-event to either pick up the next event or return to waiting.',
         command: commandString([
@@ -2822,7 +2616,6 @@ async function workflowGuide(workspace, args, agentId) {
           '--file-key',
           handoff.selected.fileKey,
           ...(handoff.selected.nodeId ? ['--node-id', handoff.selected.nodeId] : []),
-          ...visibleAgentArgs(agentId),
           ...(args.port && args.port !== true ? ['--port', String(args.port)] : []),
           ...(args['dev-port'] && args['dev-port'] !== true ? ['--dev-port', String(args['dev-port'])] : []),
         ]),
@@ -2833,7 +2626,7 @@ async function workflowGuide(workspace, args, agentId) {
   }
 }
 
-async function waitNextEvent(workspace, args, agentId) {
+async function waitNextEvent(workspace, args) {
   const timeoutMs = Number(args['timeout-ms'] || 300000)
   const pollMs = Number(args['poll-ms'] || 2000)
   const startedAt = Date.now()
@@ -2842,19 +2635,15 @@ async function waitNextEvent(workspace, args, agentId) {
 
   while (true) {
     polls += 1
-    latestStatus = await workflowStatus(workspace, args, agentId)
+    latestStatus = await workflowStatus(workspace, args)
     const nextEvent = latestStatus.pendingEvents[0]
     if (nextEvent) {
-      const brief = await eventBrief(
-        workspace,
-        {
-          ...args,
-          'file-key': latestStatus.selected.fileKey,
-          'node-id': latestStatus.selected.nodeId,
-          'event-id': nextEvent.id,
-        },
-        agentId,
-      )
+      const brief = await eventBrief(workspace, {
+        ...args,
+        'file-key': latestStatus.selected.fileKey,
+        'node-id': latestStatus.selected.nodeId,
+        'event-id': nextEvent.id,
+      })
       return {
         ...latestStatus,
         timedOut: false,
@@ -2890,7 +2679,6 @@ function printJson(value) {
 async function main() {
   const { command, args } = parseArgs(process.argv.slice(2))
   const workspace = workspaceOf(args)
-  const agentId = String(args['agent-id'] || 'codex')
 
   if (command === 'sessions') {
     printJson(await findD2cSessions(workspace))
@@ -2898,27 +2686,27 @@ async function main() {
   }
 
   if (command === 'workflow-status') {
-    printJson(await workflowStatus(workspace, args, agentId))
+    printJson(await workflowStatus(workspace, args))
     return
   }
 
   if (command === 'workflow-handoff') {
-    printJson(await workflowHandoff(workspace, args, agentId))
+    printJson(await workflowHandoff(workspace, args))
     return
   }
 
   if (command === 'prepare-interceptor') {
-    printJson(await prepareInterceptor(workspace, args, agentId))
+    printJson(await prepareInterceptor(workspace, args))
     return
   }
 
   if (command === 'open-interceptor') {
-    printJson(await openInterceptor(workspace, args, agentId))
+    printJson(await openInterceptor(workspace, args))
     return
   }
 
   if (command === 'workflow-guide') {
-    printJson(await workflowGuide(workspace, args, agentId))
+    printJson(await workflowGuide(workspace, args))
     return
   }
 
@@ -2944,22 +2732,22 @@ async function main() {
   }
 
   if (command === 'next-event-context') {
-    printJson(await nextEventContext(workspace, args, agentId))
+    printJson(await nextEventContext(workspace, args))
     return
   }
 
   if (command === 'event-brief' || command === 'annotation-brief' || command === 'repair-brief') {
-    printJson(await eventBrief(workspace, args, agentId))
+    printJson(await eventBrief(workspace, args))
     return
   }
 
   if (command === 'annotation-workflow') {
-    printJson(await annotationWorkflow(workspace, args, agentId))
+    printJson(await annotationWorkflow(workspace, args))
     return
   }
 
   if (command === 'design-diff') {
-    printJson(await designDiff(workspace, args, agentId))
+    printJson(await designDiff(workspace, args))
     return
   }
 
@@ -2984,7 +2772,7 @@ async function main() {
   }
 
   if (command === 'wait-next-event') {
-    printJson(await waitNextEvent(workspace, args, agentId))
+    printJson(await waitNextEvent(workspace, args))
     return
   }
 
@@ -2996,24 +2784,24 @@ async function main() {
   if (command === 'pending-events') {
     const fileKey = requireArg(args, 'file-key')
     const nodeId = args['node-id'] ? String(args['node-id']) : undefined
-    printJson(await getPendingEvents(workspace, fileKey, nodeId, agentId, args.source ? String(args.source) : 'human'))
+    printJson(await getPendingEvents(workspace, fileKey, nodeId, args.source ? String(args.source) : 'human'))
     return
   }
 
   if (command === 'ack-events') {
     const eventIds = optionalList(args, 'event-ids')
     if (!eventIds.length) throw new Error('Missing required --event-ids')
-    printJson(await ackEvents(workspace, requireArg(args, 'file-key'), args['node-id'] ? String(args['node-id']) : undefined, agentId, eventIds))
+    printJson(await ackEvents(workspace, requireArg(args, 'file-key'), args['node-id'] ? String(args['node-id']) : undefined, eventIds))
     return
   }
 
   if (command === 'complete-event') {
-    printJson(await completeEvent(workspace, requireArg(args, 'file-key'), args['node-id'] ? String(args['node-id']) : undefined, agentId, args))
+    printJson(await completeEvent(workspace, requireArg(args, 'file-key'), args['node-id'] ? String(args['node-id']) : undefined, args))
     return
   }
 
   if (command === 'claim-event') {
-    printJson(await claimEvent(workspace, requireArg(args, 'file-key'), args['node-id'] ? String(args['node-id']) : undefined, agentId, args))
+    printJson(await claimEvent(workspace, requireArg(args, 'file-key'), args['node-id'] ? String(args['node-id']) : undefined, args))
     return
   }
 
@@ -3036,7 +2824,7 @@ async function main() {
   }
 
   if (command === 'ensure-initial-chunks') {
-    printJson(await ensureInitialChunks(workspace, args, agentId))
+    printJson(await ensureInitialChunks(workspace, args))
     return
   }
 
