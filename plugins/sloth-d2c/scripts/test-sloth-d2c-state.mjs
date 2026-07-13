@@ -185,14 +185,11 @@ console.log(JSON.stringify({
   action: 'open_browser_and_poll_sloth',
   prepared: true,
   interceptorUrl: 'http://localhost:3100/auth-page?token=sloth-d2c-test-token&fileKey=' + encodeURIComponent(fileKey) + '&nodeId=' + encodeURIComponent(nodeId) + '&mode=create',
-  d2cDir,
-  copiedFiles: ['absolute.html', 'groupsData.json'],
   pollTargets: {
     tasksDir: d2cDir + '/tasks',
     submissionPath: d2cDir + '/submission.json'
   },
   pollPolicy: { intervalSeconds: 10, maxDurationSeconds: 180 },
-  commands: { generateChunks: 'sloth d2c --local --json' },
   forbidden: ['submit_interceptor', 'generate_code_before_submission', 'write_implementation_url_before_generation'],
   codexBrowserOpen: {
     enabled: true,
@@ -470,6 +467,32 @@ async function main() {
 	    assert.equal(defaultHandoff.codexBrowserOpen.target, 'iab')
 	    assert.equal(defaultHandoff.codexBrowserOpen.urlSource, 'commands.prepareFirstRun.interceptorUrl')
 	    assert.equal(defaultHandoff.codexBrowserOpen.afterOpen, 'poll-sloth-files')
+	    const cliEnvironmentHandoff = await runCli(
+	      [
+	        'workflow-handoff',
+	        '--workspace',
+	        designPrepare.workspace,
+	        '--file-key',
+	        designPrepare.fileKey,
+	        '--node-id',
+	        designPrepare.nodeId,
+	      ],
+	      { env: { CODEX_INTERNAL_ORIGINATOR_OVERRIDE: 'Codex CLI' } },
+	    )
+	    assert.equal(new URL(cliEnvironmentHandoff.commands.openUrl).searchParams.get('codexApp'), null)
+	    const appEnvironmentHandoff = await runCli(
+	      [
+	        'workflow-handoff',
+	        '--workspace',
+	        designPrepare.workspace,
+	        '--file-key',
+	        designPrepare.fileKey,
+	        '--node-id',
+	        designPrepare.nodeId,
+	      ],
+	      { env: { CODEX_INTERNAL_ORIGINATOR_OVERRIDE: 'Codex Desktop' } },
+	    )
+	    assert.equal(new URL(appEnvironmentHandoff.commands.openUrl).searchParams.get('codexApp'), '1')
 	    assert.match(defaultHandoff.commands.rawSlothD2c, /sloth.*d2c/)
 	    assert.match(defaultHandoff.commands.rawSlothD2c, /--silent/)
 	    assert.doesNotMatch(defaultHandoff.commands.rawSlothD2c, /--auto-grouping/)
@@ -514,6 +537,9 @@ async function main() {
 	    assert.equal(prepared.pollPolicy.maxDurationSeconds, 180)
 	    assert.match(prepared.pollTargets.tasksDir, /tasks$/)
 	    assert.match(prepared.pollTargets.submissionPath, /submission\.json$/)
+	    assert.equal('commands' in prepared, false)
+	    assert.equal('d2cDir' in prepared, false)
+	    assert.equal('copiedFiles' in prepared, false)
 	    assert.deepEqual(prepared.forbidden, ['submit_interceptor', 'generate_code_before_submission', 'write_implementation_url_before_generation'])
 	    const defaultGuide = await runCli([
 	      'workflow-guide',
@@ -574,11 +600,6 @@ async function main() {
 	      ])
 	      await writeJson(path.join(d2cDir(submittedFirstRun.workspace, submittedFirstRun.fileKey, submittedFirstRun.nodeId), 'submission.json'), {
 	        status: 'submitted',
-	        intent: 'initial-generation',
-	        source: 'interceptor',
-	        submittedAt: new Date().toISOString(),
-	        fileKey: submittedFirstRun.fileKey,
-	        nodeId: submittedFirstRun.nodeId,
 	        groupCount: 2,
 	      })
 	      const submittedHandoff = await runCli([

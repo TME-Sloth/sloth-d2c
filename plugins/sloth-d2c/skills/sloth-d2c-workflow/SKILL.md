@@ -110,7 +110,7 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs workflow-handoff \
 1. 轮询 `tasks/subAgentTask-*.md`。如果 frontmatter 中 `status: pending`，按 `skill` 或 `type` 派发聚焦 subagent，并把 task 文件路径交给它。
 2. subagent 完成后，只重新读取它声明的本地产物，例如 `groupsData.json` 或项目根 `.sloth/components.json`；不要在主上下文展开 task 正文里的大提示词。任务成功后对应 `subAgentTask-*.md` 必须被删除；失败则保留用于重试。
 3. `groupsData.json` 只表示已有分组数据，不表示用户已经确认提交；没有 `submission.json` 时不要生成 chunks 或代码。
-4. `submission.json` 是唯一的首次提交结果。确认 `{ "status": "submitted", "intent": "initial-generation" }` 后直接进入首次实现；如果状态为 `failed`，读取其中的 `error` 并停止。
+4. `submission.json` 是唯一的首次提交结果。确认 `status` 为 `submitted` 后直接进入首次实现；如果状态为 `failed`，读取其中的 `error` 并停止。
 5. 页面打开后必须做短轮询：大约每 10 秒扫描一次，最多约 3 分钟。处理完子任务后继续轮询剩余时长；检测到有效提交时立即继续首次生成。只有达到上限仍无可处理结果时，才停止本回合并说明仍在等待用户提交；用户回复继续后，再重新读取同一路径。
 
 静默模式（`interceptorMode: "silent"`）下，跳过上述 2–4 步：直接运行 `commands.firstRun` 生成 chunks，并在同一回合继续 5–6 步；首次生成阶段不要打开拦截页。
@@ -150,7 +150,7 @@ Codex 内置浏览器应保持在 Sloth 拦截页，避免把用户的 Sloth 拦
 
 ### `design_prepare`
 
-交互模式：先运行 `prepare-interceptor`。它会运行 `sloth d2c --json`，准备 REST/local 设计数据，同步项目 `.sloth` 基础文件，并返回顶层 `interceptorUrl`、`pollTargets`、`pollPolicy` 和 `commands`。按 `codexBrowserOpen` 在 Codex 内置浏览器中打开这个返回 URL。确认 Sloth D2C 页面和设计预览可见后，立即按返回的轮询字段检查本地任务与 `submission.json`；检测到提交完成后，在同一回合直接消费 chunks 并继续首次生成。
+交互模式：先运行 `prepare-interceptor`。它会运行 `sloth d2c --json`，准备 REST/local 设计数据，同步项目 `.sloth` 基础文件，并返回顶层 `interceptorUrl`、`pollTargets` 和 `pollPolicy`。按 `codexBrowserOpen` 在 Codex 内置浏览器中打开这个返回 URL。确认 Sloth D2C 页面和设计预览可见后，立即按返回的轮询字段检查本地任务与 `submission.json`；检测到提交完成后，在同一回合直接消费 chunks 并继续首次生成。
 
 提交标记出现前不要生成 chunks、不要生成代码、不要启动目标应用、不要写入 `implementationUrl`、不要 ack 事件。等待期间必须执行约 10 秒一次、最多约 3 分钟的本地文件轮询。不要读取页面控件状态后代替用户点击“提交/生成”；页面已有默认配置或按钮可用也不代表已经提交。必须使用 `commands.prepareFirstRun` 返回的拦截页 URL，不要手动打开预先拼出来的拦截页 URL。
 
@@ -158,9 +158,9 @@ Codex 内置浏览器应保持在 Sloth 拦截页，避免把用户的 Sloth 拦
 
 ### `initial_generation_requested` / `initial_generating`
 
-用户已在拦截页点击生成，提交数据通过原 submit 通道返回给 Codex；此时还没有进入 `.sloth/<fileKey>/<nodeId>/work/`。
+用户已在拦截页点击生成，服务端生成 chunks 并写入 `submission.json`；此时还没有进入 `.sloth/<fileKey>/<nodeId>/work/`。
 
-1. 从提交 payload、`groupsData.json` 或已有 `chunks/` 理解分组和生成意图。
+1. 从 `groupsData.json` 和已有 `chunks/` 理解分组和生成意图。
 2. 写实现代码前读取提交生成的 chunk prompts。
 3. 先处理数字 group chunk 文件，再处理 `codeAggregation.md` 和 `finalGenerate.md`。
 4. 适合并行且存在数字 group chunk 时，为这些文件派发 subagents 转码。每个 subagent 的输入应包含对应 `{index}.md`、相关截图/资源路径、项目技术栈约束和输出格式要求。

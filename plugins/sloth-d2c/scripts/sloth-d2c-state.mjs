@@ -71,6 +71,12 @@ function createWorkflowToken(args = {}) {
   return `sloth-d2c-${randomUUID()}`
 }
 
+function isCodexAppEnvironment(env = process.env) {
+  return String(env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE || '')
+    .trim()
+    .toLowerCase() === 'codex desktop'
+}
+
 function d2cDir(workspace, fileKey, nodeId) {
   return path.join(workspace, '.sloth', cleanPart(fileKey, 'file'), cleanPart(nodeId, 'root'))
 }
@@ -1073,6 +1079,7 @@ function buildInterceptorUrl({ host = 'localhost', port = '3100', fileKey, nodeI
   url.searchParams.set('supportSampling', supportSampling)
   url.searchParams.set('supportRoots', supportRoots)
   if (useBySkills) url.searchParams.set('useBySkills', useBySkills)
+  if (isCodexAppEnvironment()) url.searchParams.set('codexApp', '1')
   url.searchParams.set('dataSource', dataSource)
   if (workspace) url.searchParams.set('workspaceRoot', path.resolve(workspace))
   return url.toString()
@@ -2413,7 +2420,7 @@ async function prepareInterceptor(workspace, args) {
 
   const parsed = parseJsonCommandOutput(run.stdout)
   const interceptorUrl = parsed?.interceptorUrl || ''
-  if (!interceptorUrl || !parsed?.pollTargets || !parsed?.pollPolicy || !parsed?.commands) {
+  if (!interceptorUrl || !parsed?.pollTargets || !parsed?.pollPolicy) {
     return {
       ok: false,
       mode: 'prepare-interceptor',
@@ -2435,10 +2442,7 @@ async function prepareInterceptor(workspace, args) {
     command,
     interceptorUrl,
     prepared: parsed.prepared,
-    reason: parsed.reason,
-    d2cDir: parsed.d2cDir,
-    copiedFiles: parsed.copiedFiles,
-    commands: parsed.commands,
+    ...(parsed.reason ? { reason: parsed.reason } : {}),
     codexBrowserOpen:
       parsed.codexBrowserOpen ||
       codexBrowserOpenContract({
