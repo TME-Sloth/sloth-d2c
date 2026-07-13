@@ -564,6 +564,14 @@ async function main() {
 	    assert.equal(silentGuide.guide[0].command, silentHandoff.commands.firstRun)
 	    const submittedFirstRun = await createDesignPrepareWorkspace()
 	    try {
+	      const submittedChunksDir = path.join(d2cDir(submittedFirstRun.workspace, submittedFirstRun.fileKey, submittedFirstRun.nodeId), 'chunks')
+	      await fs.mkdir(submittedChunksDir, { recursive: true })
+	      await Promise.all([
+	        fs.writeFile(path.join(submittedChunksDir, '0.md'), '# group 0'),
+	        fs.writeFile(path.join(submittedChunksDir, '1.md'), '# group 1'),
+	        fs.writeFile(path.join(submittedChunksDir, 'codeAggregation.md'), '# aggregation'),
+	        fs.writeFile(path.join(submittedChunksDir, 'finalGenerate.md'), '# final'),
+	      ])
 	      await writeJson(path.join(d2cDir(submittedFirstRun.workspace, submittedFirstRun.fileKey, submittedFirstRun.nodeId), 'submission.json'), {
 	        status: 'submitted',
 	        intent: 'initial-generation',
@@ -589,7 +597,7 @@ async function main() {
 	      assert.equal(submittedHandoff.submission.groupCount, 2)
 	      assert.match(submittedHandoff.submission.path, /submission\.json$/)
 	      assert.match(submittedHandoff.recommendedAction, /submission\.json/)
-	      assert.equal(submittedHandoff.initialGeneration.mustRunSlothD2cBeforeCoding, true)
+	      assert.equal(submittedHandoff.initialGeneration.mustRunSlothD2cBeforeCoding, false)
 	      await assert.rejects(fs.stat(workDir(submittedFirstRun.workspace, submittedFirstRun.fileKey, submittedFirstRun.nodeId)), /ENOENT/)
 	    } finally {
 	      await fs.rm(submittedFirstRun.workspace, { recursive: true, force: true })

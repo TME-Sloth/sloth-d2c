@@ -2177,8 +2177,6 @@ async function workflowHandoff(workspace, args) {
       ? initialChunkStatus.needsSlothD2c
         ? 'Before writing implementation code, run commands.rawSlothD2c or commands.generateChunks to refresh chunk prompts. Do not open the interceptor. Follow numeric group chunks when present, then codeAggregation.md and finalGenerate.md, create real project components/styles/assets, start the target app preview, write implementationUrl if work mode is still needed later, capture an implementation screenshot, and compare it against screenshots/index.png with agent visual review. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.'
         : 'Follow the existing Sloth D2C prompts: numeric group chunks when present, then codeAggregation.md and finalGenerate.md. Generate real project components/styles/assets, start the target app preview, write implementationUrl if work mode is still needed later, capture an implementation screenshot, and compare it against screenshots/index.png with agent visual review. Do not open the interceptor during first generation. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.'
-      : initialChunkStatus.needsSlothD2c
-      ? 'Before writing implementation code, use submission.json as the first-run gate and run the sloth d2c atomic command to generate chunks/prompts from the submitted configuration. Do not hand-write the initial implementation from screenshots while chunks are missing. Follow numeric group chunks when present, then codeAggregation.md and finalGenerate.md, create real project components/styles/assets, start the target app preview, write implementationUrl, capture an implementation screenshot, compare it against screenshots/index.png with agent visual review, and keep or reopen the Sloth interceptor in the Codex in-app browser. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.'
       : 'Use submission.json as the first-run gate, then follow existing Sloth D2C prompts: numeric group chunks when present, then codeAggregation.md and finalGenerate.md. Generate real project components/styles/assets, start the target app preview, write implementationUrl, capture an implementation screenshot, compare it against screenshots/index.png with agent visual review, and keep or reopen the Sloth interceptor in the Codex in-app browser. Do not navigate the in-app browser directly to the target preview URL. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.',
     initial_generating: skipInterceptor
       ? 'Continue the silent first generation path until a reachable implementation preview URL is available, then write implementationUrl if work mode is still needed later, capture an implementation screenshot, and compare it against screenshots/index.png with agent visual review. Do not open the interceptor during first generation.'
@@ -2221,7 +2219,8 @@ async function workflowHandoff(workspace, args) {
       chunkStatus: initialChunkStatus,
       autoGrouping: autoGroupingStatus,
       mustRunAutoGroupingBeforeChunks: Boolean(autoGroupingStatus.requiresAutoGrouping),
-      mustRunSlothD2cBeforeCoding: phase === 'initial_generation_requested' && initialChunkStatus.needsSlothD2c && !autoGroupingStatus.requiresAutoGrouping,
+      mustRunSlothD2cBeforeCoding:
+        skipInterceptor && phase === 'initial_generation_requested' && initialChunkStatus.needsSlothD2c && !autoGroupingStatus.requiresAutoGrouping,
     },
     codexBrowserOpen,
     stopCondition: !slothCli.available

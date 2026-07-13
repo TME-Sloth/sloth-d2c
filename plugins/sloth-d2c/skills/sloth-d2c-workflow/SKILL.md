@@ -5,7 +5,7 @@ description: '用于通过 Sloth 拦截页运行端到端 Sloth D2C 工作流，
 
 # Sloth D2C 工作流
 
-用于连接 Codex 与 Sloth D2C 拦截页。拦截页是用户交互界面；首次转码属于准备与生成阶段，写入 `implementationUrl` 后进入 work。Codex 环境下先运行 `commands.prepareFirstRun`，它会运行正常的 `sloth d2c` 准备 REST/local 设计数据并返回顶层 `interceptorUrl`。首次提交是人工门禁：用户必须自己在拦截页确认配置、分组和标注后点击生成。用户提交后会写入 `.sloth/<fileKey>/<nodeId>/submission.json`，再按 `groupsData.json` 和 `chunks/` 生成初版实现。进入 work 后，通过插件脚本读写目标项目的 `.sloth/<fileKey>/<nodeId>/work/` 状态。
+用于连接 Codex 与 Sloth D2C 拦截页。拦截页是用户交互界面；首次转码属于准备与生成阶段，写入 `implementationUrl` 后进入 work。Codex 环境下先运行 `commands.prepareFirstRun`，它会运行正常的 `sloth d2c` 准备 REST/local 设计数据并返回顶层 `interceptorUrl`。首次提交是人工门禁：用户必须自己在拦截页确认配置、分组和标注后点击生成。检测到 `.sloth/<fileKey>/<nodeId>/submission.json` 提交完成后，直接消费 `groupsData.json` 和 `chunks/` 生成初版实现。进入 work 后，通过插件脚本读写目标项目的 `.sloth/<fileKey>/<nodeId>/work/` 状态。
 
 进入 work 后，用户的继续处理 prompt 应尽量短，只传 `fileKey`、`nodeId`、`eventId`、`count`、`implementationUrl` 等定位字段。标注详情、当前阶段、已处理进度和 ack 状态都从目标项目本地 `.sloth/.../work/state.json`、`events.jsonl`、`snapshots/` 读取；如果当前 cwd 没有对应状态，应先定位真实生成 workspace，再处理事件。
 
@@ -99,7 +99,7 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs workflow-handoff \
 1. 运行 `prepare-interceptor`，让它执行首次 `sloth d2c` 准备、拉取 REST 数据或读取本地缓存，并写入目标项目 `.sloth/<fileKey>/<nodeId>/` 的基础设计数据。
 2. 按 `codexBrowserOpen` 打开命令返回的顶层 `interceptorUrl`，不是预先返回的 `commands.openUrl`。
 3. 保持浏览器停在拦截页，把页面控制权交给用户，同时立即开始轮询本地任务和提交状态。不要检查提交按钮是否可用后自行点击，不要用 DOM selector、坐标点击、快捷键或脚本触发表单提交。
-4. 轮询期间检测到用户提交后，无需用户再回复“继续”，立即运行/校验 Sloth D2C chunk 生成命令。
+4. 轮询检测到 `submission.json` 的状态为 `submitted` 后，无需用户再回复“继续”，直接消费 chunks 并进入首次生成；状态为 `failed` 时读取 `error` 并停止。
 5. 如果生成了数字 group chunk prompts，优先使用 subagents 并行处理它们。
 6. 使用最终 prompt 写入可运行的项目文件。
 
@@ -110,12 +110,12 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs workflow-handoff \
 1. 轮询 `tasks/subAgentTask-*.md`。如果 frontmatter 中 `status: pending`，按 `skill` 或 `type` 派发聚焦 subagent，并把 task 文件路径交给它。
 2. subagent 完成后，只重新读取它声明的本地产物，例如 `groupsData.json` 或项目根 `.sloth/components.json`；不要在主上下文展开 task 正文里的大提示词。任务成功后对应 `subAgentTask-*.md` 必须被删除；失败则保留用于重试。
 3. `groupsData.json` 只表示已有分组数据，不表示用户已经确认提交；没有 `submission.json` 时不要生成 chunks 或代码。
-4. `submission.json` 是唯一的首次提交标记。只有确认 `{ "status": "submitted", "intent": "initial-generation" }` 后，才运行 chunk 生成命令并进入首次实现。
-5. 页面打开后必须做短轮询：大约每 10 秒扫描一次，最多约 3 分钟。处理完子任务后继续轮询剩余时长；检测到有效提交时立即继续首次生成。只有到达上限仍无可处理结果时，才停止本回合并说明仍在等待用户提交；用户回复继续后，再重新读取同一路径。
+4. `submission.json` 是唯一的首次提交结果。确认 `{ "status": "submitted", "intent": "initial-generation" }` 后直接进入首次实现；如果状态为 `failed`，读取其中的 `error` 并停止。
+5. 页面打开后必须做短轮询：大约每 10 秒扫描一次，最多约 3 分钟。处理完子任务后继续轮询剩余时长；检测到有效提交时立即继续首次生成。只有达到上限仍无可处理结果时，才停止本回合并说明仍在等待用户提交；用户回复继续后，再重新读取同一路径。
 
 静默模式（`interceptorMode: "silent"`）下，跳过上述 2–4 步：直接运行 `commands.firstRun` 生成 chunks，并在同一回合继续 5–6 步；首次生成阶段不要打开拦截页。
 
-有效 chunk 输出必须包含 `codeAggregation.md` 和 `finalGenerate.md`。如果存在用户提交的分组，通常还会包含一个或多个数字 group chunk 文件，例如 `0.md`、`1.md`；静默模式或无分组时可能只有 `codeAggregation.md` 和 `finalGenerate.md`。首次实现代码开始前，必须先运行 chunk 生成并检查实际 chunk 结构。
+首次实现按顺序消费已有 prompts：先处理数字 group chunk 文件，例如 `0.md`、`1.md`，再处理 `codeAggregation.md` 和 `finalGenerate.md`。交互模式在 `submission.json` 提交完成后直接进入这一步；静默模式由 `commands.firstRun` 生成 prompts 后进入。
 
 如果用户在 Skill/拦截页路径启用了“自动分组 / AI 分组”，并出现 `tasks/subAgentTask-autoGrouping-*.md` 或 `autoGroupingHandoff.requiresAutoGrouping=true`，不要把自动分组细节写在本 workflow 里，也不要把任务提示词全量读入主上下文。把 task 文件交给聚焦 subagent 使用 `$sloth-d2c-auto-grouping` 处理。主 agent 只重新读取本地 `groupsData.json` 确认结果；任务成功后必须删除对应 `subAgentTask-autoGrouping-*.md`，失败则保留用于重试。拦截页按钮路径会轮询该文件并自动反填；静默首次生成路径则在文件写入后继续运行 `autoGroupingHandoff.rerunCommand` 生成 chunks。
 
@@ -150,7 +150,7 @@ Codex 内置浏览器应保持在 Sloth 拦截页，避免把用户的 Sloth 拦
 
 ### `design_prepare`
 
-交互模式：先运行 `prepare-interceptor`。它会运行 `sloth d2c --json`，准备 REST/local 设计数据，同步项目 `.sloth` 基础文件，并返回顶层 `interceptorUrl`、`pollTargets`、`pollPolicy` 和 `commands`。按 `codexBrowserOpen` 在 Codex 内置浏览器中打开这个返回 URL。确认 Sloth D2C 页面和设计预览可见后，立即按返回的轮询字段检查本地任务与 `submission.json`；提交出现后运行 `commands.generateChunks` 并在同一回合继续首次生成。
+交互模式：先运行 `prepare-interceptor`。它会运行 `sloth d2c --json`，准备 REST/local 设计数据，同步项目 `.sloth` 基础文件，并返回顶层 `interceptorUrl`、`pollTargets`、`pollPolicy` 和 `commands`。按 `codexBrowserOpen` 在 Codex 内置浏览器中打开这个返回 URL。确认 Sloth D2C 页面和设计预览可见后，立即按返回的轮询字段检查本地任务与 `submission.json`；检测到提交完成后，在同一回合直接消费 chunks 并继续首次生成。
 
 提交标记出现前不要生成 chunks、不要生成代码、不要启动目标应用、不要写入 `implementationUrl`、不要 ack 事件。等待期间必须执行约 10 秒一次、最多约 3 分钟的本地文件轮询。不要读取页面控件状态后代替用户点击“提交/生成”；页面已有默认配置或按钮可用也不代表已经提交。必须使用 `commands.prepareFirstRun` 返回的拦截页 URL，不要手动打开预先拼出来的拦截页 URL。
 
@@ -161,8 +161,8 @@ Codex 内置浏览器应保持在 Sloth 拦截页，避免把用户的 Sloth 拦
 用户已在拦截页点击生成，提交数据通过原 submit 通道返回给 Codex；此时还没有进入 `.sloth/<fileKey>/<nodeId>/work/`。
 
 1. 从提交 payload、`groupsData.json` 或已有 `chunks/` 理解分组和生成意图。
-2. 写实现代码前先运行/校验 chunk 生成命令，生成/刷新 chunk prompts。
-3. 校验生成的 chunk 目录。必须看到 `codeAggregation.md` 和 `finalGenerate.md`；如果有数字 group chunk 文件，再把它们纳入处理。
+2. 写实现代码前读取提交生成的 chunk prompts。
+3. 先处理数字 group chunk 文件，再处理 `codeAggregation.md` 和 `finalGenerate.md`。
 4. 适合并行且存在数字 group chunk 时，为这些文件派发 subagents 转码。每个 subagent 的输入应包含对应 `{index}.md`、相关截图/资源路径、项目技术栈约束和输出格式要求。
 5. 主 agent 汇总 subagent 输出，再逐条消费 `codeAggregation.md` 和 `finalGenerate.md` 生成或更新目标实现。
 6. 启动或识别目标应用预览。技术 smoke check 应直接访问真实预览 URL，但使用一次性 Playwright/Puppeteer/headless 浏览器、HTTP smoke check 或项目测试脚本，不要覆盖 Codex 内置浏览器里的 Sloth 拦截页。
