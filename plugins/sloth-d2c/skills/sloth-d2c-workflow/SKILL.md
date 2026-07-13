@@ -167,8 +167,8 @@ Codex 内置浏览器应保持在 Sloth 拦截页，避免把用户的 Sloth 拦
 5. 主 agent 汇总 subagent 输出，再逐条消费 `codeAggregation.md` 和 `finalGenerate.md` 生成或更新目标实现。
 6. 启动或识别目标应用预览。技术 smoke check 应直接访问真实预览 URL，但使用一次性 Playwright/Puppeteer/headless 浏览器、HTTP smoke check 或项目测试脚本，不要覆盖 Codex 内置浏览器里的 Sloth 拦截页。
 7. 写入 `implementationUrl`。这一步才开始 work 状态，用于后续生成稿标注、diff 和修复事件。
-8. 首次实现转码后做截图 diff 验收：运行 `commands.implementationScreenshotTarget` 获取实现截图保存路径，使用一次性 Playwright/Puppeteer/headless 浏览器按设计截图宽度和完整页面高度捕获 `implementationUrl`，保存到 `.sloth/<fileKey>/<nodeId>/screenshots/implementation/`。然后直接对比 `.sloth/<fileKey>/<nodeId>/screenshots/index.png` 和实现截图，由 agent 分段视觉审查首屏、核心卡片、列表、底部模块、文字、颜色、间距、图片裁剪和页面高度。不要运行像素级 diff 工具。
-9. 根据 agent 视觉差异修复目标实现代码，重新截图复核，直到没有明显结构/文本/尺寸/裁剪/高度问题，或清楚记录剩余低优先级差异。
+8. 首次实现转码后做截图 diff 验收：运行一次 `commands.designDiff`。若返回 `blocked`，先补齐 baseline 或 `implementationUrl`；若返回 `ready-for-agent-capture-and-review`，由 agent 按 `captureSpec` 使用一次性 Playwright/Puppeteer/headless 浏览器截取当前实现，然后直接查看 `baseline` 和 `candidatePath`，不要再运行 `design-diff --candidate`。视觉审查覆盖结构、文本、尺寸、间距、颜色、图片裁剪和页面高度，不使用像素级 diff 代替判断。
+9. 根据 agent 视觉差异修复目标实现代码，按同一 `captureSpec` 截取新的当前实现并复核，直到没有明显结构/文本/尺寸/裁剪/高度问题，或清楚记录剩余低优先级差异。
 10. 交互模式下，重新打开或保持 Sloth 拦截页在 Codex 内置浏览器中，通过拦截页查看生成预览和接收用户标注。静默模式的首次生成跳过此步。
 11. 运行聚焦校验；真实实现的可访问性/交互/状态变化应在 `implementationUrl` 上验证。交互模式或 work 阶段才用 Sloth 拦截页验证工作流容器和标注入口。
 

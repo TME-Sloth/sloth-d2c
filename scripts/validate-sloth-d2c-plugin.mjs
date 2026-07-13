@@ -38,11 +38,25 @@ async function main() {
   const skillDirs = await fs.readdir(path.join(pluginRoot, 'skills'), { withFileTypes: true })
   for (const entry of skillDirs) {
     if (!entry.isDirectory()) continue
-    const skillPath = path.join(pluginRoot, 'skills', entry.name, 'SKILL.md')
+    const skillRoot = path.join(pluginRoot, 'skills', entry.name)
+    const skillPath = path.join(skillRoot, 'SKILL.md')
     const content = await fs.readFile(skillPath, 'utf8')
     assert(content.startsWith('---\n'), `${entry.name}/SKILL.md must start with frontmatter`)
     assert(content.includes('description:'), `${entry.name}/SKILL.md must include a description`)
     assert(!content.includes('~/plugins/sloth-d2c'), `${entry.name}/SKILL.md must not hardcode ~/plugins/sloth-d2c`)
+
+    const metadataPath = path.join(skillRoot, 'agents/openai.yaml')
+    const metadata = await fs.readFile(metadataPath, 'utf8').catch(() => null)
+    assert(metadata, `${entry.name}/agents/openai.yaml is required for skill interface metadata`)
+
+    for (const iconField of ['icon_small', 'icon_large']) {
+      const match = metadata.match(new RegExp(`^\\s*${iconField}:\\s*["']([^"']+)["']\\s*$`, 'm'))
+      assert(match, `${entry.name}/agents/openai.yaml must define ${iconField}`)
+
+      const iconPath = path.resolve(skillRoot, match[1])
+      const iconStat = await fs.stat(iconPath).catch(() => null)
+      assert(iconStat?.isFile(), `${entry.name}/${match[1]} referenced by ${iconField} must exist`)
+    }
   }
 
   console.log(`Sloth D2C plugin validation passed: ${pluginRoot}`)

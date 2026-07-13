@@ -2053,6 +2053,30 @@ async function designDiff(workspace, args) {
   const root = d2cDir(workspace, selected.fileKey, selected.nodeId)
   const screenshots = await screenshotInventory(workspace, selected.fileKey, selected.nodeId)
   const baseline = args.baseline && args.baseline !== true ? path.resolve(workspace, String(args.baseline)) : screenshots.pageScreenshot?.path || path.join(root, 'screenshots', 'index.png')
+  const implementationUrl = status.state.implementationUrl || null
+  const blockers = []
+  if (!(await pathExists(baseline))) {
+    blockers.push({ code: 'baseline-missing', path: baseline })
+  }
+  if (!implementationUrl) {
+    blockers.push({ code: 'implementation-url-missing' })
+  }
+
+  if (blockers.length > 0) {
+    return {
+      mode: 'blocked',
+      selected: status.selected,
+      state: status.state,
+      baseline,
+      implementationUrl,
+      blockers,
+      instructions: [
+        'Do not start visual review until the design baseline exists and implementationUrl has been written.',
+        'If the workflow is still in design_prepare, finish the first implementation generation before running design-diff.',
+      ],
+    }
+  }
+
   const target = await implementationScreenshotTarget(workspace, {
     ...args,
     'file-key': selected.fileKey,
@@ -2060,55 +2084,27 @@ async function designDiff(workspace, args) {
     label: args.label && args.label !== true ? String(args.label) : 'design_diff',
   })
 
-  if (args.candidate && args.candidate !== true) {
-    const candidate = resolveWorkspacePath(workspace, args.candidate)
-    if (!(await pathExists(baseline))) throw new Error(`Baseline image not found: ${baseline}`)
-    if (!candidate || !(await pathExists(candidate))) throw new Error(`Candidate image not found: ${candidate || String(args.candidate)}`)
-    return {
-      mode: 'ready-for-agent-visual-review',
-      selected: status.selected,
-      state: status.state,
-      baseline,
-      candidate,
-      instructions: [
-        'Open or inspect the baseline and candidate screenshots directly.',
-        'Use agent visual review to list concrete layout, text, spacing, color, asset, crop, height, and interaction-state differences.',
-        'Do not run pixel-diff tooling.',
-      ],
-    }
-  }
-
   return {
-    mode: 'needs-candidate-screenshot',
+    mode: 'ready-for-agent-capture-and-review',
     selected: status.selected,
     state: status.state,
-    implementationUrl: status.state.implementationUrl,
+    implementationUrl,
     baseline,
     implementationScreenshot: target,
-    instructions: [
-      'Do not open implementationScreenshot.implementationUrl in the Codex in-app browser; keep the in-app browser on the Sloth interceptor.',
-      'Capture implementationScreenshot.implementationUrl with headless/local screenshot tooling and save it to implementationScreenshot.screenshotPath; if a matching screenshot already exists under screenshots/implementation, reuse it.',
-      'Compare the baseline and implementation screenshots directly with agent visual review first. Note concrete layout, text, spacing, color, and asset differences.',
-      'Do not run pixel-diff tooling; record agent-reviewed visual findings in --diff-summary or --visual-diffs-json when completing an event.',
-      'When this command is part of a pending annotation event, pass the agent-reviewed visual findings to complete-event.',
-    ],
-    commands: {
-      captureTarget: target,
-      compareAfterCapture: commandString([
-        'node',
-        scriptPath(),
-        'design-diff',
-        '--workspace',
-        workspace,
-        '--file-key',
-        selected.fileKey,
-        ...(selected.nodeId ? ['--node-id', selected.nodeId] : []),
-        '--candidate',
-        target.screenshotPath,
-        '--label',
-        args.label && args.label !== true ? String(args.label) : 'design-diff',
-      ]),
+    candidatePath: target.screenshotPath,
+    captureSpec: {
+      url: implementationUrl,
+      screenshotPath: target.screenshotPath,
+      matchBaselineWidth: true,
+      fullPage: true,
+      freshCaptureRequired: true,
     },
+    instructions: [
+      'Keep the Codex in-app browser on the Sloth interceptor.',
+      'Capture captureSpec.url with a one-off headless/local browser, match the baseline width, capture the full page, and save a fresh screenshot to captureSpec.screenshotPath.',
+      'After capture, inspect baseline and candidatePath directly; do not run design-diff a second time just to validate the files.',
+      'Use agent visual review to identify actionable layout, text, spacing, color, asset, crop, height, and interaction-state differences. Do not use pixel-diff tooling as the final judgment.',
+    ],
   }
 }
 

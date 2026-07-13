@@ -86,6 +86,7 @@ async function createWorkspace() {
   await fs.mkdir(path.join(targetD2cDir, 'chunks'), { recursive: true })
   await fs.mkdir(path.join(targetD2cDir, 'screenshots'), { recursive: true })
   await fs.writeFile(path.join(targetD2cDir, 'absolute.html'), '<html><body>test</body></html>\n', 'utf8')
+  await fs.writeFile(path.join(targetD2cDir, 'screenshots', 'index.png'), 'design baseline\n', 'utf8')
   await fs.writeFile(path.join(targetD2cDir, 'chunks', 'chunk.md'), '# chunk\n', 'utf8')
   await writeJson(path.join(targetD2cDir, 'groupsData.json'), [])
   await writeJson(path.join(targetWorkDir, 'state.json'), {
@@ -294,6 +295,29 @@ async function main() {
     assert.equal(screenshotTarget.screenshotPath, path.join(d2cDir(workspace, fileKey, nodeId), 'screenshots', 'implementation', 'preview_check.png'))
     await assert.rejects(fs.stat(path.join(workDir(workspace, fileKey, nodeId), 'implementation-screenshots')), /ENOENT/)
 
+    const designDiff = await runCli([
+      'design-diff',
+      '--workspace',
+      workspace,
+      '--file-key',
+      fileKey,
+      '--node-id',
+      nodeId,
+      '--label',
+      'design-diff',
+    ])
+    assert.equal(designDiff.mode, 'ready-for-agent-capture-and-review')
+    assert.equal(designDiff.baseline, path.join(d2cDir(workspace, fileKey, nodeId), 'screenshots', 'index.png'))
+    assert.equal(designDiff.implementationUrl, 'http://127.0.0.1:9999/')
+    assert.equal(designDiff.candidatePath, path.join(d2cDir(workspace, fileKey, nodeId), 'screenshots', 'implementation', 'design-diff.png'))
+    assert.equal(designDiff.captureSpec.url, designDiff.implementationUrl)
+    assert.equal(designDiff.captureSpec.screenshotPath, designDiff.candidatePath)
+    assert.equal(designDiff.captureSpec.matchBaselineWidth, true)
+    assert.equal(designDiff.captureSpec.fullPage, true)
+    assert.equal(designDiff.captureSpec.freshCaptureRequired, true)
+    assert.equal(designDiff.commands, undefined)
+    assert.match(designDiff.instructions.join(' '), /do not run design-diff a second time/i)
+
     const autoResolvedOpen = await runCli([
       'open-interceptor',
       '--workspace',
@@ -400,6 +424,21 @@ async function main() {
 
   const designPrepare = await createDesignPrepareWorkspace()
   try {
+    const blockedDesignDiff = await runCli([
+      'design-diff',
+      '--workspace',
+      designPrepare.workspace,
+      '--file-key',
+      designPrepare.fileKey,
+      '--node-id',
+      designPrepare.nodeId,
+    ])
+    assert.equal(blockedDesignDiff.mode, 'blocked')
+    assert.deepEqual(
+      blockedDesignDiff.blockers.map((blocker) => blocker.code),
+      ['baseline-missing', 'implementation-url-missing'],
+    )
+
     const defaultHandoff = await runCli([
       'workflow-handoff',
       '--workspace',

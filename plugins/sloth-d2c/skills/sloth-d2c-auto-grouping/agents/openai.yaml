@@ -1,0 +1,6 @@
+interface:
+  display_name: "Sloth D2C Auto Grouping"
+  short_description: "执行 Sloth D2C 自动分组任务。"
+  icon_small: "./assets/sloth.png"
+  icon_large: "./assets/sloth.png"
+  brand_color: "#F5821F"
