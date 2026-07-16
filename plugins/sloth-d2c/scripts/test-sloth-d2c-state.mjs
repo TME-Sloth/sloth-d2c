@@ -179,17 +179,23 @@ const fileKey = valueOf('--file-key');
 const nodeId = valueOf('--node-id');
 const workspace = process.env.SLOTH_WORKSPACE_ROOT;
 const d2cDir = workspace + '/.sloth/' + fileKey + '/' + nodeId;
+const runId = 'd2c-run-test';
 console.log(JSON.stringify({
   ok: true,
   mode: 'interactive',
-  action: 'open_browser_and_poll_sloth',
+  action: 'open_browser_and_wait',
   prepared: true,
   interceptorUrl: 'http://localhost:3100/auth-page?token=sloth-d2c-test-token&fileKey=' + encodeURIComponent(fileKey) + '&nodeId=' + encodeURIComponent(nodeId) + '&mode=create',
-  pollTargets: {
+  handoffPaths: {
     tasksDir: d2cDir + '/tasks',
-    submissionPath: d2cDir + '/submission.json'
+    submissionPath: d2cDir + '/submission.json',
+    chunksDir: d2cDir + '/chunks'
   },
-  pollPolicy: { intervalSeconds: 10, maxDurationSeconds: 180 },
+  wait: {
+    runId,
+    command: "sloth d2c wait --file-key '" + fileKey + "' --node-id '" + nodeId + "' --run-id '" + runId + "' --json",
+    events: ['task', 'submitted', 'failed']
+  },
   forbidden: ['submit_interceptor', 'generate_code_before_submission', 'write_implementation_url_before_generation'],
   codexBrowserOpen: {
     enabled: true,
@@ -197,7 +203,7 @@ console.log(JSON.stringify({
     skill: 'browser:control-in-app-browser',
     url: 'http://localhost:3100/auth-page?token=sloth-d2c-test-token&fileKey=' + encodeURIComponent(fileKey) + '&nodeId=' + encodeURIComponent(nodeId) + '&mode=create',
     urlSource: 'interceptorUrl',
-    afterOpen: 'poll_sloth_files'
+    afterOpen: 'wait-for-sloth-event'
   }
 }));
 `,
@@ -466,7 +472,7 @@ async function main() {
 	    assert.equal(defaultHandoff.codexBrowserOpen.skill, 'browser:control-in-app-browser')
 	    assert.equal(defaultHandoff.codexBrowserOpen.target, 'iab')
 	    assert.equal(defaultHandoff.codexBrowserOpen.urlSource, 'commands.prepareFirstRun.interceptorUrl')
-	    assert.equal(defaultHandoff.codexBrowserOpen.afterOpen, 'poll-sloth-files')
+	    assert.equal(defaultHandoff.codexBrowserOpen.afterOpen, 'wait-for-sloth-event')
 	    const cliEnvironmentHandoff = await runCli(
 	      [
 	        'workflow-handoff',
@@ -528,15 +534,21 @@ async function main() {
 	      },
 	    )
 	    assert.equal(prepared.ok, true)
-	    assert.equal(prepared.action, 'open_browser_and_poll_sloth')
+	    assert.equal(prepared.action, 'open_browser_and_wait')
 	    assert.match(prepared.command, /sloth.*d2c/)
 	    assert.equal(prepared.interceptorUrl, `http://localhost:3100/auth-page?token=sloth-d2c-test-token&fileKey=${designPrepare.fileKey}&nodeId=${designPrepare.nodeId}&mode=create`)
 	    assert.equal(prepared.codexBrowserOpen.url, prepared.interceptorUrl)
 	    assert.equal(prepared.codexBrowserOpen.urlSource, 'interceptorUrl')
-	    assert.equal(prepared.pollPolicy.intervalSeconds, 10)
-	    assert.equal(prepared.pollPolicy.maxDurationSeconds, 180)
-	    assert.match(prepared.pollTargets.tasksDir, /tasks$/)
-	    assert.match(prepared.pollTargets.submissionPath, /submission\.json$/)
+	    assert.equal(prepared.wait.runId, 'd2c-run-test')
+	    assert.match(prepared.wait.command, /sloth d2c wait/)
+	    assert.deepEqual(prepared.wait.events, ['task', 'submitted', 'failed'])
+	    assert.equal('listenerStatus' in prepared, false)
+	    assert.equal('pollTargets' in prepared, false)
+	    assert.equal('pollPolicy' in prepared, false)
+	    assert.match(prepared.stopCondition, /no business timeout/)
+	    assert.match(prepared.handoffPaths.tasksDir, /tasks$/)
+	    assert.match(prepared.handoffPaths.submissionPath, /submission\.json$/)
+	    assert.match(prepared.handoffPaths.chunksDir, /chunks$/)
 	    assert.equal('commands' in prepared, false)
 	    assert.equal('d2cDir' in prepared, false)
 	    assert.equal('copiedFiles' in prepared, false)
@@ -676,8 +688,8 @@ async function main() {
 	    assert.match(handoff.recommendedAction, /commands\.prepareFirstRun/)
 	    assert.equal(handoff.commands.openUrl, null)
 	    assert.match(handoff.commands.startWorkflowDev, /start-workflow-dev\.mjs/)
-	    assert.match(handoff.stopCondition, /every 10 seconds/)
-	    assert.match(handoff.stopCondition, /3 minutes/)
+	    assert.match(handoff.stopCondition, /blocking wait\.command/)
+	    assert.match(handoff.stopCondition, /no business timeout/)
 	    const guide = await runCli([
       'workflow-guide',
       '--workspace',
@@ -693,7 +705,7 @@ async function main() {
 	    assert.equal(firstStep.step, 'prepare-first-run')
 	    assert.equal(firstStep.command, handoff.commands.startWorkflowDev)
 	    const waitStep = guide.guide.find((step) => step.step === 'wait-or-handle-event')
-	    assert.equal(waitStep.status, 'polling')
+	    assert.equal(waitStep.status, 'waiting')
 	    assert.equal(waitStep.command, null)
 	  } finally {
 	    await fs.rm(designPrepare.workspace, { recursive: true, force: true })

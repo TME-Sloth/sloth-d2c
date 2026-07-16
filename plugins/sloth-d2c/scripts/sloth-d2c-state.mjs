@@ -190,7 +190,7 @@ function codexBrowserOpenContract({ phase, interceptorMode, url, urlSource = 'co
       'Keep the Codex in-app browser on the Sloth interceptor.',
       'Do not open the generated implementation preview in this browser surface.',
       phase === 'design_prepare'
-        ? 'After the interceptor is visible, poll the returned local task and submission paths for up to three minutes; do not submit or generate for the user.'
+        ? 'After the interceptor is visible, run the blocking wait command returned by prepare-interceptor; do not submit or generate for the user.'
         : 'Use this surface only for the Sloth workflow shell and annotation work.',
     ],
   }
@@ -2178,8 +2178,8 @@ async function workflowHandoff(workspace, args) {
     design_prepare: skipInterceptor
       ? 'Run commands.rawSlothD2c (or commands.generateChunks when chunks are incomplete) to fetch design data and generate chunk prompts silently. Do not open the interceptor or wait for submission.json. After codeAggregation.md and finalGenerate.md exist, continue directly to first implementation generation in the same turn; numeric group chunks are optional.'
       : shouldStartDevInterceptor
-      ? 'Start the Sloth workflow dev launcher, rerun workflow-handoff, then run commands.prepareFirstRun. Open the returned interceptorUrl in the Codex in-app browser and poll tasks/subAgentTask-*.md plus submission.json about every 10 seconds for up to 3 minutes. Do not click Submit/Generate or trigger the form for the user. Use shell open/system default browser/Chrome only if the Codex in-app browser is unavailable or control fails.'
-      : 'Run commands.prepareFirstRun first. It runs sloth d2c in interactive handoff mode to prepare REST/local design data without opening Chrome or blocking for submit. Then open the returned interceptorUrl in the Codex in-app browser and poll tasks/subAgentTask-*.md plus submission.json about every 10 seconds for up to 3 minutes. Handle tasks as they appear and continue first generation immediately when submission.json is submitted. Do not inspect controls and submit on the user’s behalf.',
+      ? 'Start the Sloth workflow dev launcher, rerun workflow-handoff, then run commands.prepareFirstRun. Open the returned interceptorUrl in the Codex in-app browser and run the returned wait.command. Handle task events and wait again; continue first generation on submitted. Do not click Submit/Generate or trigger the form for the user. Use shell open/system default browser/Chrome only if the Codex in-app browser is unavailable or control fails.'
+      : 'Run commands.prepareFirstRun first. It runs sloth d2c in interactive handoff mode to prepare REST/local design data without opening Chrome or blocking for submit. Then open the returned interceptorUrl in the Codex in-app browser and run the returned blocking wait.command. Handle task events and wait again; continue first generation on submitted. Do not inspect controls and submit on the user’s behalf.',
     initial_generation_requested: skipInterceptor
       ? initialChunkStatus.needsSlothD2c
         ? 'Before writing implementation code, run commands.rawSlothD2c or commands.generateChunks to refresh chunk prompts. Do not open the interceptor. Follow numeric group chunks when present, then codeAggregation.md and finalGenerate.md, create real project components/styles/assets, start the target app preview, write implementationUrl if work mode is still needed later, capture an implementation screenshot, and compare it against screenshots/index.png with agent visual review. Do not deliver by embedding absolute.html, raw HTML, iframe, srcDoc, dangerouslySetInnerHTML, or a scaled static wrapper.'
@@ -2209,7 +2209,7 @@ async function workflowHandoff(workspace, args) {
     urlSource: phase === 'design_prepare' ? 'commands.prepareFirstRun.interceptorUrl' : 'commands.openUrl',
     afterOpen:
       phase === 'design_prepare'
-        ? 'poll-sloth-files'
+        ? 'wait-for-sloth-event'
         : firstPending
           ? 'keep-open-while-handling-event'
           : 'wait-for-user-annotation',
@@ -2235,7 +2235,7 @@ async function workflowHandoff(workspace, args) {
       : phase === 'design_prepare'
         ? skipInterceptor
           ? 'Do not open the interceptor. Stop only after codeAggregation.md and finalGenerate.md exist and first implementation generation has started or completed.'
-          : 'After opening the returned interceptor URL, poll tasks/subAgentTask-*.md and submission.json about every 10 seconds. Continue immediately when work appears; stop waiting only after about 3 minutes without a submission or task. Do not click Submit/Generate or use DOM selectors or coordinates to submit.'
+          : 'After opening the returned interceptor URL, run the blocking wait.command returned by prepare-interceptor. Handle task events and rerun the command; continue immediately on submitted. The wait has no business timeout. Do not click Submit/Generate or use DOM selectors or coordinates to submit.'
         : undefined,
     recommendedAction: slothCli.available ? phaseRecommendedAction : slothCli.message,
     commands: {
@@ -2420,7 +2420,7 @@ async function prepareInterceptor(workspace, args) {
 
   const parsed = parseJsonCommandOutput(run.stdout)
   const interceptorUrl = parsed?.interceptorUrl || ''
-  if (!interceptorUrl || !parsed?.pollTargets || !parsed?.pollPolicy) {
+  if (!interceptorUrl || !parsed?.handoffPaths || !parsed?.wait?.command) {
     return {
       ok: false,
       mode: 'prepare-interceptor',
@@ -2436,7 +2436,7 @@ async function prepareInterceptor(workspace, args) {
   return {
     ok: true,
     mode: 'prepare-interceptor',
-    action: 'open_browser_and_poll_sloth',
+    action: 'open_browser_and_wait',
     selected: handoff.selected,
     workflowPhase: handoff.workflowPhase,
     command,
@@ -2450,12 +2450,12 @@ async function prepareInterceptor(workspace, args) {
         interceptorMode: 'interactive',
         url: interceptorUrl,
         urlSource: 'prepare-interceptor.interceptorUrl',
-        afterOpen: 'poll-sloth-files',
+        afterOpen: 'wait-for-sloth-event',
       }),
-    pollTargets: parsed.pollTargets,
-    pollPolicy: parsed.pollPolicy,
+    handoffPaths: parsed.handoffPaths,
+    wait: parsed.wait,
     stopCondition:
-      'Stop waiting only after pollPolicy.maxDurationSeconds elapses without a submitted submission.json or a pending task.',
+      'Run wait.command and keep it active until it returns task, submitted, or failed. After a successful task, delete the task file and run the same command again. There is no business timeout; terminate the command only when voluntarily leaving the wait.',
     forbidden: parsed.forbidden,
   }
 }
@@ -2500,12 +2500,12 @@ async function workflowGuide(workspace, args) {
         action: skipInterceptor && isFirstRunWaiting
           ? 'Run commands.firstRun to generate chunks/prompts silently, then continue directly to first implementation generation. Do not open the interceptor or wait for submission.json.'
           : needsDevInterceptor
-          ? 'Start the Sloth workflow dev launcher, rerun workflow-handoff, then run commands.prepareFirstRun. Open the returned interceptorUrl in the Codex in-app browser, then poll local tasks and submission state for up to 3 minutes. Do not click Submit/Generate or trigger the form. Use shell open/system default browser/Chrome only if the Codex in-app browser is unavailable or control fails.'
+          ? 'Start the Sloth workflow dev launcher, rerun workflow-handoff, then run commands.prepareFirstRun. Open the returned interceptorUrl in the Codex in-app browser, then run the returned wait.command. Do not click Submit/Generate or trigger the form. Use shell open/system default browser/Chrome only if the Codex in-app browser is unavailable or control fails.'
           : isInitialGeneration
           ? skipInterceptor
             ? 'Generate the first implementation directly from chunks/prompts. Do not open the interceptor during first generation.'
             : 'Keep the existing Sloth interceptor open while Codex performs the first generation.'
-          : 'Run commands.prepareFirstRun to prepare design data, then open the returned interceptorUrl in the Codex in-app browser, then poll local tasks and submission state for up to 3 minutes. Do not click Submit/Generate or trigger the form. Use shell open/system default browser/Chrome only if the Codex in-app browser is unavailable or control fails.',
+          : 'Run commands.prepareFirstRun to prepare design data, then open the returned interceptorUrl in the Codex in-app browser and run the returned wait.command. Do not click Submit/Generate or trigger the form. Use shell open/system default browser/Chrome only if the Codex in-app browser is unavailable or control fails.',
         url: skipInterceptor && isFirstRunWaiting ? null : handoff.commands.openUrl,
         codexBrowserOpen: handoff.codexBrowserOpen,
         command: skipInterceptor && isFirstRunWaiting
@@ -2525,7 +2525,7 @@ async function workflowGuide(workspace, args) {
       },
       {
         step: 'wait-or-handle-event',
-        status: hasPendingEvent || isInitialGeneration ? 'ready' : isFirstRunWaiting ? 'polling' : 'waiting',
+        status: hasPendingEvent || isInitialGeneration ? 'ready' : 'waiting',
         action: hasPendingEvent
           ? phase === 'initial_generation_requested'
             ? needsInitialChunks
@@ -2539,7 +2539,7 @@ async function workflowGuide(workspace, args) {
           : isFirstRunWaiting
             ? skipInterceptor
               ? 'Continue first implementation generation from chunks/prompts in the same turn. Do not open the interceptor.'
-              : 'Poll tasks/subAgentTask-*.md and submission.json about every 10 seconds for up to 3 minutes. Handle pending tasks and resume polling; continue initial generation immediately when submission.json is submitted. Return to the user only after the polling window expires.'
+              : 'Run wait.command from commands.prepareFirstRun. Handle a returned task, delete its task file after successful validation, and run the same command again; continue initial generation immediately when it returns submitted. The command has no business timeout.'
             : isWorkWaiting
               ? 'Wait specifically for annotation.submitted from generated-preview annotations.'
               : 'Wait for the next actionable workflow event.',
@@ -2561,7 +2561,7 @@ async function workflowGuide(workspace, args) {
           : isFirstRunWaiting
             ? skipInterceptor
               ? 'Initial code exists as real project components/styles/assets, chunks were consumed, and the interceptor was not opened during first generation.'
-              : 'A pending task or submitted submission.json is handled immediately, or the 3-minute polling window expires.'
+              : 'wait.command returns task, submitted, or failed; task handling resumes the same wait command.'
             : 'wait-next-event returns timedOut=false with nextEvent and eventBrief.',
       },
       {
@@ -2578,7 +2578,7 @@ async function workflowGuide(workspace, args) {
         doneWhen: phase === 'initial_generation_requested'
           ? 'Initial code exists as real project components/styles/assets, it is not an absolute.html/raw HTML wrapper, the target app preview is running, implementationUrl has been written, an implementation screenshot is saved under screenshots/implementation, agent visual review against screenshots/index.png has been performed, and the Sloth interceptor is still the visible Codex browser surface.'
           : isFirstRunWaiting
-            ? 'submission.json is submitted during polling.'
+            ? 'The blocking wait command returns submitted.'
           : hasPendingEvent
             ? 'Code changes and checks for nextEvent are complete.'
             : 'A pending event exists.',

@@ -5,7 +5,7 @@ description: '用于通过 Sloth 拦截页运行端到端 Sloth D2C 工作流，
 
 # Sloth D2C 工作流
 
-用于连接 Codex 与 Sloth D2C 拦截页。拦截页是用户交互界面；首次转码属于准备与生成阶段，写入 `implementationUrl` 后进入 work。Codex 环境下先运行 `commands.prepareFirstRun`，它会运行正常的 `sloth d2c` 准备 REST/local 设计数据并返回顶层 `interceptorUrl`。首次提交是人工门禁：用户必须自己在拦截页确认配置、分组和标注后点击生成。检测到 `.sloth/<fileKey>/<nodeId>/submission.json` 提交完成后，直接消费 `groupsData.json` 和 `chunks/` 生成初版实现。进入 work 后，通过插件脚本读写目标项目的 `.sloth/<fileKey>/<nodeId>/work/` 状态。
+用于连接 Codex 与 Sloth D2C 拦截页。拦截页是用户交互界面；首次转码属于准备与生成阶段，写入 `implementationUrl` 后进入 work。Codex 环境下先运行 `commands.prepareFirstRun`，它会运行正常的 `sloth d2c` 准备 REST/local 设计数据并返回顶层 `interceptorUrl` 和阻塞式 `wait.command`。首次提交是人工门禁：用户必须自己在拦截页确认配置、分组和标注后点击生成。等待命令返回 `submitted` 后，直接消费返回的 `chunksDir` 生成初版实现。进入 work 后，通过插件脚本读写目标项目的 `.sloth/<fileKey>/<nodeId>/work/` 状态。
 
 进入 work 后，用户的继续处理 prompt 应尽量短，只传 `fileKey`、`nodeId`、`eventId`、`count`、`implementationUrl` 等定位字段。标注详情、当前阶段、已处理进度和 ack 状态都从目标项目本地 `.sloth/.../work/state.json`、`events.jsonl`、`snapshots/` 读取；如果当前 cwd 没有对应状态，应先定位真实生成 workspace，再处理事件。
 
@@ -75,7 +75,15 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs prepare-interceptor \
   --node-id <nodeId>
 ```
 
-读取 `ok`、`action`、`interceptorUrl`、`codexBrowserOpen`、`pollTargets`、`pollPolicy` 和 `forbidden`。当 `ok === true` 且 `action === "open_browser_and_poll_sloth"` 时，立即按 `codexBrowserOpen` 打开 Codex 内置浏览器，然后必须进入本地文件轮询，不能在页面打开后直接结束本回合。按 `pollPolicy` 检查 `pollTargets.tasksDir/subAgentTask-*.md` 和 `pollTargets.submissionPath`：出现任务就处理并继续轮询，出现有效提交就立即进入首次生成；只有达到轮询时限仍无结果时，才结束本回合等待用户后续回复。
+读取 `ok`、`action`、`interceptorUrl`、`codexBrowserOpen`、`handoffPaths`、`wait` 和 `forbidden`。当 `ok === true` 且 `action === "open_browser_and_wait"` 时，立即按 `codexBrowserOpen` 打开 Codex 内置浏览器，然后执行 `wait.command`。该命令由全局 Sloth CLI 提供，会阻塞到返回 `task`、`submitted` 或 `failed`；没有业务超时，也不要手工扫描 `handoffPaths`。
+
+### Agent 等待协议
+
+- `wait.command` 存活即表示当前 Agent 正在监听；连接结束即表示没有活跃监听。不向 `state.json` 写监听状态，也不创建额外状态文件。
+- 返回 `task` 时，按 `taskPath` 派发对应 Skill。成功后校验产物并删除任务文件，再重新执行同一个 `wait.command`；失败时保留任务文件并报告，不要立即重入造成重复任务。
+- 返回 `submitted` 时直接消费事件里的 `chunksDir`；返回 `failed` 时报告 `error` 并停止。
+- Agent 主动离开等待时终止 CLI 即可。页面事件未交付给活跃 waiter 时，会自动复制续跑提示词并提示用户粘贴；已交付时不复制。
+- 用户粘贴续跑提示词后，重新执行原 `wait.command`。任务或提交先持久化、后尝试交付，所以已发生的事件会立即返回，不会丢失。
 
 如果返回 `action === "install_sloth_cli"`，按返回的 `command` 安装后重新运行 `prepare-interceptor`。如果返回 `action === "handle_pending_event"` 或 `action === "continue_existing_workflow"`，说明已经不是首次准备阶段，改按返回的 `workflowPhase` / `eventBrief` 继续后续生成或 work。
 
@@ -98,26 +106,26 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs workflow-handoff \
 
 1. 运行 `prepare-interceptor`，让它执行首次 `sloth d2c` 准备、拉取 REST 数据或读取本地缓存，并写入目标项目 `.sloth/<fileKey>/<nodeId>/` 的基础设计数据。
 2. 按 `codexBrowserOpen` 打开命令返回的顶层 `interceptorUrl`，不是预先返回的 `commands.openUrl`。
-3. 保持浏览器停在拦截页，把页面控制权交给用户，同时立即开始轮询本地任务和提交状态。不要检查提交按钮是否可用后自行点击，不要用 DOM selector、坐标点击、快捷键或脚本触发表单提交。
-4. 轮询检测到 `submission.json` 的状态为 `submitted` 后，无需用户再回复“继续”，直接消费 chunks 并进入首次生成；状态为 `failed` 时读取 `error` 并停止。
+3. 保持浏览器停在拦截页，把页面控制权交给用户，然后立即执行返回的 `wait.command`。不要检查提交按钮是否可用后自行点击，不要用 DOM selector、坐标点击、快捷键或脚本触发表单提交。
+4. 等待命令返回 `submitted` 后直接消费 `chunksDir` 并进入首次生成，无需用户回复“继续”；返回 `failed` 时读取 `error` 并停止。
 5. 如果生成了数字 group chunk prompts，优先使用 subagents 并行处理它们。
 6. 使用最终 prompt 写入可运行的项目文件。
 
-### 查看用户提交状态
+### 处理等待事件
 
-交互模式下，agent 通过目标项目的 `.sloth/<fileKey>/<nodeId>/` 判断用户是否提交，以及是否有子任务需要处理：
+交互模式下，Agent 只消费 `wait.command` 返回的事件；`handoffPaths` 用于定位和校验持久化产物，不作为轮询目标：
 
-1. 轮询 `tasks/subAgentTask-*.md`。如果 frontmatter 中 `status: pending`，按 `skill` 或 `type` 派发聚焦 subagent，并把 task 文件路径交给它。
+1. 返回 `task` 时，确认 `taskPath` 的 frontmatter 中 `status: pending`，按 `skill` 或 `type` 派发聚焦 subagent，并把 task 文件路径交给它。
 2. subagent 完成后，只重新读取它声明的本地产物，例如 `groupsData.json` 或项目根 `.sloth/components.json`；不要在主上下文展开 task 正文里的大提示词。任务成功后对应 `subAgentTask-*.md` 必须被删除；失败则保留用于重试。
 3. `groupsData.json` 只表示已有分组数据，不表示用户已经确认提交；没有 `submission.json` 时不要生成 chunks 或代码。
-4. `submission.json` 是唯一的首次提交结果。确认 `status` 为 `submitted` 后直接进入首次实现；如果状态为 `failed`，读取其中的 `error` 并停止。
-5. 页面打开后必须做短轮询：大约每 10 秒扫描一次，最多约 3 分钟。处理完子任务后继续轮询剩余时长；检测到有效提交时立即继续首次生成。只有达到上限仍无可处理结果时，才停止本回合并说明仍在等待用户提交；用户回复继续后，再重新读取同一路径。
+4. `submission.json` 仍是持久化的首次提交结果，但流程以 `submitted` 事件为入口；收到后直接进入首次实现。`failed` 事件携带错误信息并终止本轮。
+5. 等待命令不设业务超时。处理完任务后重新执行同一个命令继续阻塞；如果 Agent 主动停止等待，直接终止 CLI。此后页面点击“AI 自动分组”“导入组件”或“提交”时，如果事件未交付给活跃 waiter，就复制续跑提示词并提示用户粘贴。
 
 静默模式（`interceptorMode: "silent"`）下，跳过上述 2–4 步：直接运行 `commands.firstRun` 生成 chunks，并在同一回合继续 5–6 步；首次生成阶段不要打开拦截页。
 
 首次实现按顺序消费已有 prompts：先处理数字 group chunk 文件，例如 `0.md`、`1.md`，再处理 `codeAggregation.md` 和 `finalGenerate.md`。交互模式在 `submission.json` 提交完成后直接进入这一步；静默模式由 `commands.firstRun` 生成 prompts 后进入。
 
-如果用户在 Skill/拦截页路径启用了“自动分组 / AI 分组”，并出现 `tasks/subAgentTask-autoGrouping-*.md` 或 `autoGroupingHandoff.requiresAutoGrouping=true`，不要把自动分组细节写在本 workflow 里，也不要把任务提示词全量读入主上下文。把 task 文件交给聚焦 subagent 使用 `$sloth-d2c-auto-grouping` 处理。主 agent 只重新读取本地 `groupsData.json` 确认结果；任务成功后必须删除对应 `subAgentTask-autoGrouping-*.md`，失败则保留用于重试。拦截页按钮路径会轮询该文件并自动反填；静默首次生成路径则在文件写入后继续运行 `autoGroupingHandoff.rerunCommand` 生成 chunks。
+如果用户在 Skill/拦截页路径启用了“自动分组 / AI 分组”，并收到指向 `tasks/subAgentTask-autoGrouping-*.md` 的 `task` 事件，或 `autoGroupingHandoff.requiresAutoGrouping=true`，不要把自动分组细节写在本 workflow 里，也不要把任务提示词全量读入主上下文。把 task 文件交给聚焦 subagent 使用 `$sloth-d2c-auto-grouping` 处理。主 agent 只重新读取本地 `groupsData.json` 确认结果；任务成功后必须删除对应 `subAgentTask-autoGrouping-*.md`，失败则保留用于重试。拦截页会自动读取结果并反填；静默首次生成路径则在文件写入后继续运行 `autoGroupingHandoff.rerunCommand` 生成 chunks。
 
 有数字 group chunk 时，建议把 chunk 转码工作拆给 subagents：每个 subagent 只处理一个或一小组独立的 group chunk，返回组件代码、依赖资源、样式要点和风险。一般最多同时派发 6 个 subagents；group chunks 多于 6 个时可分批派发。若当前运行环境没有可用 subagent 能力，或任务规模很小，也可以由主 agent 直接处理，并在收尾说明采用了哪种路径。
 
@@ -150,9 +158,9 @@ Codex 内置浏览器应保持在 Sloth 拦截页，避免把用户的 Sloth 拦
 
 ### `design_prepare`
 
-交互模式：先运行 `prepare-interceptor`。它会运行 `sloth d2c --json`，准备 REST/local 设计数据，同步项目 `.sloth` 基础文件，并返回顶层 `interceptorUrl`、`pollTargets` 和 `pollPolicy`。按 `codexBrowserOpen` 在 Codex 内置浏览器中打开这个返回 URL。确认 Sloth D2C 页面和设计预览可见后，立即按返回的轮询字段检查本地任务与 `submission.json`；检测到提交完成后，在同一回合直接消费 chunks 并继续首次生成。
+交互模式：先运行 `prepare-interceptor`。它会运行 `sloth d2c --json`，准备 REST/local 设计数据，同步项目 `.sloth` 基础文件，并返回顶层 `interceptorUrl`、`handoffPaths` 和 `wait`。按 `codexBrowserOpen` 在 Codex 内置浏览器中打开这个返回 URL，然后执行 `wait.command`。收到 `task` 就处理、校验、删除任务并再次等待；收到 `submitted` 就在同一回合直接消费 chunks 并继续首次生成；收到 `failed` 就报告错误。
 
-提交标记出现前不要生成 chunks、不要生成代码、不要启动目标应用、不要写入 `implementationUrl`、不要 ack 事件。等待期间必须执行约 10 秒一次、最多约 3 分钟的本地文件轮询。不要读取页面控件状态后代替用户点击“提交/生成”；页面已有默认配置或按钮可用也不代表已经提交。必须使用 `commands.prepareFirstRun` 返回的拦截页 URL，不要手动打开预先拼出来的拦截页 URL。
+收到 `submitted` 前不要生成 chunks、不要生成代码、不要启动目标应用、不要写入 `implementationUrl`、不要 ack 事件。等待连接本身就是监听事实，不写 `polling` / `wait` 状态，也没有业务超时。不要读取页面控件状态后代替用户点击“提交/生成”；页面已有默认配置或按钮可用也不代表已经提交。必须使用 `commands.prepareFirstRun` 返回的拦截页 URL，不要手动打开预先拼出来的拦截页 URL。
 
 静默模式：运行 `commands.firstRun` 生成 chunks/prompts，校验 chunk 结构后在同一回合继续首次实现生成；不要打开拦截页，也不要等待用户提交。
 
@@ -199,6 +207,6 @@ Codex 内置浏览器应保持在 Sloth 拦截页，避免把用户的 Sloth 拦
 
 ## 收尾
 
-报告当前阶段、`interceptorMode`、拦截页是否已打开（静默首次生成应报告未打开）、已处理事件 id、chunk 处理方式（subagent 并行或主 agent 直接处理）、`implementationUrl` 是否已写入、变更文件和已运行校验。交互模式下 `design_prepare` 只有在约 3 分钟轮询超时后，才报告页面已打开且仍在等待用户提交。
+报告当前阶段、`interceptorMode`、拦截页是否已打开（静默首次生成应报告未打开）、已处理事件 id、chunk 处理方式（subagent 并行或主 agent 直接处理）、`implementationUrl` 是否已写入、变更文件和已运行校验。若 Agent 主动结束首次等待，终止等待命令即可。告知用户：没有活跃 waiter 时，页面会在任务或提交事件未交付后自动复制续跑提示词，粘贴回当前对话即可恢复。
 
 交互模式和 work 阶段的收尾不要贴真实实现 URL 或本地 Vite URL。若要给用户一个可打开入口，只给 Sloth 拦截页 URL，并确认 Codex 内置浏览器已停在该拦截页。
