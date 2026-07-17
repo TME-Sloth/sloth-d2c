@@ -1,10 +1,10 @@
 {
   "name": "sloth-d2c",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "private": true,
   "description": "Codex marketplace package for Sloth D2C.",
   "scripts": {
-    "validate": "node scripts/validate-sloth-d2c-plugin.mjs && node --check plugins/sloth-d2c/scripts/sloth-d2c-state.mjs && node --check plugins/sloth-d2c/scripts/test-sloth-d2c-state.mjs && node --check plugins/sloth-d2c/scripts/start-workflow-dev.mjs && node plugins/sloth-d2c/scripts/test-sloth-d2c-state.mjs"
+    "validate": "node scripts/validate-sloth-d2c-plugin.mjs && node --check plugins/sloth-d2c/scripts/start-workflow-dev.mjs && node plugins/sloth-d2c/scripts/test-sloth-d2c-state.mjs"
   },
   "engines": {
     "node": ">=18"

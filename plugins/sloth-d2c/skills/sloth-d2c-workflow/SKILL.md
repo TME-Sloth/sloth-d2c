@@ -49,7 +49,7 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs workflow-handoff \
 
 此时返回 `interceptorMode: "silent"`。首次生成走静默路径，**不要**打开拦截页，也**不要**等待 `submission.json` 人工提交：
 
-1. 运行 `commands.firstRun`（即 `commands.rawSlothD2c`）或 `commands.generateChunks`，直接拉取设计数据并生成 chunks/prompts。
+1. 运行 `commands.generateChunks`，直接拉取设计数据并生成 chunks/prompts。
 2. 校验 `chunksDir` 后，在同一回合继续消费生成提示词：有数字 group chunks 时先处理它们，再处理 `codeAggregation.md` 和 `finalGenerate.md`；没有数字 group chunks 时直接处理 `codeAggregation.md` 和 `finalGenerate.md`。
 3. 首次生成阶段不要打开、保持或重新打开 Sloth 拦截页；真实预览验证仍直接访问 `implementationUrl` 或一次性自动化浏览器。
 4. 只有用户后续还要进入标注 work，或 workflow 已进入 `implementation_work` 及之后阶段，才再打开拦截页。
@@ -58,7 +58,7 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs workflow-handoff \
 
 | 场景      | 交互模式（默认）                                     | 静默模式（`--silent`）                                     |
 | --------- | ---------------------------------------------------- | ---------------------------------------------------------- |
-| 首次准备  | `commands.prepareFirstRun` + 打开拦截页 + 等用户提交 | `commands.firstRun` / `commands.rawSlothD2c`，不打开拦截页 |
+| 首次准备  | `commands.prepareFirstRun` + 打开拦截页 + 等用户提交 | `commands.generateChunks`，不打开拦截页 |
 | 首次生成  | 基于拦截页提交后的 chunks 生成，并保持拦截页可见     | 直接消费 chunks 生成，首次生成不打开拦截页                 |
 | 后续 work | 打开拦截页接收标注                                   | 仅在 work 阶段按需打开拦截页                               |
 
@@ -121,9 +121,9 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs workflow-handoff \
 4. `submission.json` 仍是持久化的首次提交结果，但流程以 `action === "consume_chunks"` 为入口；收到后直接进入首次实现。`action === "error"` 携带错误信息并终止本轮。
 5. 等待命令不设业务超时。处理完任务后重新执行同一个命令继续阻塞；如果 Agent 主动停止等待，直接终止 CLI。首次配置阶段页面不根据 waiter 状态复制 Prompt；进入 work 阶段后，事件未交付给活跃 waiter 时才复制续跑提示词并提示用户粘贴。
 
-静默模式（`interceptorMode: "silent"`）下，跳过上述 2–4 步：直接运行 `commands.firstRun` 生成 chunks，并在同一回合继续 5–6 步；首次生成阶段不要打开拦截页。
+静默模式（`interceptorMode: "silent"`）下，跳过上述 2–4 步：直接运行 `commands.generateChunks` 生成 chunks，并在同一回合继续 5–6 步；首次生成阶段不要打开拦截页。
 
-首次实现按顺序消费已有 prompts：先处理数字 group chunk 文件，例如 `0.md`、`1.md`，再处理 `codeAggregation.md` 和 `finalGenerate.md`。交互模式在 `submission.json` 提交完成后直接进入这一步；静默模式由 `commands.firstRun` 生成 prompts 后进入。
+首次实现按顺序消费已有 prompts：先处理数字 group chunk 文件，例如 `0.md`、`1.md`，再处理 `codeAggregation.md` 和 `finalGenerate.md`。交互模式在 `submission.json` 提交完成后直接进入这一步；静默模式由 `commands.generateChunks` 生成 prompts 后进入。
 
 如果用户在 Skill/拦截页路径启用了“自动分组 / AI 分组”，并收到 `action === "handle_subagent_task"` 且 `task.skill === "sloth-d2c-auto-grouping"`，不要把自动分组细节写在本 workflow 里，也不要把任务提示词全量读入主上下文。把 `task.path` 交给聚焦 subagent 使用 `$sloth-d2c-auto-grouping` 处理。主 agent 只重新读取本地 `groupsData.json` 确认结果；任务成功后必须删除对应 `subAgentTask-autoGrouping-*.md`，失败则保留用于重试。拦截页会自动读取结果并反填；静默首次生成路径则在文件写入后执行返回的 `resumeCommand` 生成 chunks。
 
@@ -162,7 +162,7 @@ Codex 内置浏览器应保持在 Sloth 拦截页，避免把用户的 Sloth 拦
 
 收到 `action === "consume_chunks"` 前不要生成 chunks、不要生成代码、不要启动目标应用、不要写入 `implementationUrl`、不要 ack 事件。等待连接本身就是监听事实，不写 `polling` / `wait` 状态，也没有业务超时。不要读取页面控件状态后代替用户点击“提交/生成”；页面已有默认配置或按钮可用也不代表已经提交。必须使用 `commands.prepareFirstRun` 返回的拦截页 URL，不要手动打开预先拼出来的拦截页 URL。
 
-静默模式：运行 `commands.firstRun` 生成 chunks/prompts，校验 chunk 结构后在同一回合继续首次实现生成；不要打开拦截页，也不要等待用户提交。
+静默模式：运行 `commands.generateChunks` 生成 chunks/prompts，校验 chunk 结构后在同一回合继续首次实现生成；不要打开拦截页，也不要等待用户提交。
 
 ### `initial_generation_requested` / `initial_generating`
 
@@ -174,8 +174,8 @@ Codex 内置浏览器应保持在 Sloth 拦截页，避免把用户的 Sloth 拦
 4. 适合并行且存在数字 group chunk 时，为这些文件派发 subagents 转码。每个 subagent 的输入应包含对应 `{index}.md`、相关截图/资源路径、项目技术栈约束和输出格式要求。
 5. 主 agent 汇总 subagent 输出，再逐条消费 `codeAggregation.md` 和 `finalGenerate.md` 生成或更新目标实现。
 6. 启动或识别目标应用预览。技术 smoke check 应直接访问真实预览 URL，但使用一次性 Playwright/Puppeteer/headless 浏览器、HTTP smoke check 或项目测试脚本，不要覆盖 Codex 内置浏览器里的 Sloth 拦截页。
-7. 写入 `implementationUrl`。这一步才开始 work 状态，用于后续生成稿标注、diff 和修复事件。
-8. 首次实现完成后，直接派发 subAgent 使用 `sloth-d2c-design-diff` 进行视觉验收与必要修复。
+7. 写入 `implementationUrl`。这一步才开始 work 状态，用于后续生成稿标注和预览验证。
+8. 首次实现完成后，直接派发 subAgent 使用 `sloth-d2c-design-diff` 进行轻量截图自检。
 9. 交互模式下，重新打开或保持 Sloth 拦截页在 Codex 内置浏览器中，通过拦截页查看生成预览和接收用户标注。静默模式的首次生成跳过此步。
 10. 运行聚焦校验；真实实现的可访问性/交互/状态变化应在 `implementationUrl` 上验证。交互模式或 work 阶段才用 Sloth 拦截页验证工作流容器和标注入口。
 
@@ -189,21 +189,11 @@ Codex 内置浏览器应保持在 Sloth 拦截页，避免把用户的 Sloth 拦
 
 ### `implementation_annotations_requested`
 
-使用 `commands.eventBrief` 或 `annotation-workflow` 上下文处理当前事件。聚焦 `changedCanvasAnnotations`，尤其是 `target=implementation` 的标注；修改本地实现，运行一个最小必要检查，然后完成事件。普通交互、文案、间距或样式标注不要默认运行视觉对比；事件明确要求视觉 diff 时直接使用 `sloth-d2c-design-diff`。
-
-### `design_diff_requested`
-
-直接把 `workspace`、`fileKey`、`nodeId`、`eventId` 和聚焦 `eventBrief` 交给 subAgent，使用 `sloth-d2c-design-diff` 处理。
-
-### `repair_requested`
-
-按事件摘要处理普通修复；`eventBrief` 明确要求视觉 diff 时，直接派发 subAgent 使用 `sloth-d2c-design-diff`。
+使用 `commands.eventBrief` 或 `annotation-workflow` 上下文处理当前事件。聚焦 `changedCanvasAnnotations`，尤其是 `target=implementation` 的标注；修改本地实现，运行一个最小必要检查，然后完成事件。普通交互、文案、间距或样式标注不要默认运行视觉对比；事件明确要求视觉 diff 时直接使用 `sloth-d2c-design-diff` 进行完整分析。
 
 ## 事件语义
 
 - `annotation.submitted`：用户保存了生成预览标注。
-- `diff.confirmed`：用户接受了视觉 diff 修复请求。
-- `repair.requested`：修复事件。
 - `annotation.saved`：仅表示快照/历史保存，不是默认修复请求。
 
 只处理新的、未确认的用户事件。`complete-event` 是写入 agent 结果并确认已处理事件的常规方式。

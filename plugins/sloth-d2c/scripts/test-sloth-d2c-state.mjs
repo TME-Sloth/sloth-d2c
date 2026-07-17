@@ -78,16 +78,6 @@ function completeTestEvent(workspace, fileKey, nodeId, eventId, summary) {
   ])
 }
 
-async function waitFor(predicate, timeoutMs = 2000) {
-  const startedAt = Date.now()
-  while (Date.now() - startedAt < timeoutMs) {
-    const value = predicate()
-    if (value) return value
-    await new Promise((resolve) => setTimeout(resolve, 25))
-  }
-  return predicate()
-}
-
 async function createWorkspace() {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'sloth-d2c-state-'))
   const fileKey = 'testFile'
@@ -266,7 +256,7 @@ async function main() {
     assert.equal(handoff.eventBrief.canvasAnnotationCount, 0)
 
     const brief = await runCli([
-      'annotation-brief',
+      'event-brief',
       '--workspace',
       workspace,
       '--file-key',
@@ -279,7 +269,6 @@ async function main() {
     assert.equal(brief.eventBrief.snapshot, null)
     assert.equal(brief.eventBrief.canvasAnnotations, undefined)
     assert.equal(brief.eventBrief.canvasAnnotationCount, 0)
-    assert.equal(brief.repairBrief.changedCanvasAnnotations[0].id, brief.eventBrief.changedCanvasAnnotations[0].id)
 
     const complete = await runCli([
       'complete-event',
@@ -297,57 +286,6 @@ async function main() {
     assert.equal(complete.remainingPendingCount, 0)
     assert.deepEqual(complete.acknowledgedEventIds, ['evt_annotation'])
     assert.deepEqual(complete.state.handledEventIds, ['evt_seed', 'evt_annotation'])
-
-    await appendWorkEvent(workspace, fileKey, nodeId, {
-      id: 'evt_diff',
-      type: 'diff.confirmed',
-      source: 'human',
-      payload: { summary: '确认视觉差异', intent: 'visual-diff' },
-    })
-    const diffHandoff = await runWorkflowHandoff(workspace, fileKey, nodeId, address.port)
-    assert.equal(diffHandoff.workflowPhase.phase, 'design_diff_requested')
-    assert.equal(diffHandoff.nextEvent.id, 'evt_diff')
-    assert.equal(diffHandoff.eventBrief.event.id, 'evt_diff')
-    assert.match(diffHandoff.recommendedAction, /sloth-d2c-design-diff/i)
-    const diffGuide = await runCli([
-      'workflow-guide',
-      '--workspace',
-      workspace,
-      '--file-key',
-      fileKey,
-      '--node-id',
-      nodeId,
-    ])
-    const completeDiffStep = diffGuide.guide.find((step) => step.step === 'complete-event')
-    assert.equal(completeDiffStep.command, null)
-    assert.match(completeDiffStep.action, /No additional complete-event step is needed/i)
-
-    await completeTestEvent(workspace, fileKey, nodeId, 'evt_diff', 'handled visual diff')
-
-    await appendWorkEvent(workspace, fileKey, nodeId, {
-      id: 'evt_diff_mixed',
-      type: 'diff.confirmed',
-      source: 'human',
-      payload: { intent: 'visual-diff' },
-    })
-    await appendWorkEvent(workspace, fileKey, nodeId, {
-      id: 'evt_annotation_mixed',
-      type: 'annotation.submitted',
-      source: 'human',
-      payload: { intent: 'annotation-fix' },
-    })
-    const mixedHandoff = await runWorkflowHandoff(workspace, fileKey, nodeId, address.port)
-    assert.equal(mixedHandoff.workflowPhase.phase, 'implementation_annotations_requested')
-    assert.equal(mixedHandoff.workflowPhase.eventId, 'evt_annotation_mixed')
-    assert.equal(mixedHandoff.nextEvent.id, 'evt_annotation_mixed')
-    assert.equal(mixedHandoff.eventBrief.event.id, 'evt_annotation_mixed')
-    assert.ok(mixedHandoff.commands.eventBrief.includes("'--event-id' 'evt_annotation_mixed'"))
-    await completeTestEvent(workspace, fileKey, nodeId, 'evt_annotation_mixed', 'handled focused annotation')
-    const remainingMixedHandoff = await runWorkflowHandoff(workspace, fileKey, nodeId, address.port)
-    assert.equal(remainingMixedHandoff.workflowPhase.phase, 'design_diff_requested')
-    assert.equal(remainingMixedHandoff.nextEvent.id, 'evt_diff_mixed')
-    assert.ok(remainingMixedHandoff.commands.eventBrief.includes("'--event-id' 'evt_diff_mixed'"))
-    await completeTestEvent(workspace, fileKey, nodeId, 'evt_diff_mixed', 'handled remaining visual diff')
 
     const autoResolvedOpen = await runCli([
       'open-interceptor',
@@ -512,9 +450,22 @@ async function main() {
 	      { env: { CODEX_INTERNAL_ORIGINATOR_OVERRIDE: 'Codex Desktop' } },
 	    )
 	    assert.equal(new URL(appEnvironmentHandoff.commands.openUrl).searchParams.get('codexApp'), '1')
-	    assert.match(defaultHandoff.commands.rawSlothD2c, /sloth.*d2c/)
-	    assert.match(defaultHandoff.commands.rawSlothD2c, /--silent/)
-	    assert.doesNotMatch(defaultHandoff.commands.rawSlothD2c, /--auto-grouping/)
+	    assert.match(defaultHandoff.commands.generateChunks, /ensure-initial-chunks/)
+	    assert.doesNotMatch(defaultHandoff.commands.generateChunks, /--auto-grouping/)
+	    assert.deepEqual(Object.keys(defaultHandoff.commands).sort(), [
+	      'annotationWorkflow',
+	      'eventBrief',
+	      'generateChunks',
+	      'installSlothNpm',
+	      'installSlothPnpm',
+	      'openUrl',
+	      'prepareFirstRun',
+	      'setImplementationUrl',
+	      'startWorkflowDev',
+	      'verifySloth',
+	      'waitNextEvent',
+	    ].sort())
+	    assert.equal(defaultHandoff.repairBrief, undefined)
 	    assert.deepEqual(defaultHandoff.warnings, [])
 	    const autoGroupingHandoff = await runCli([
 	      'workflow-handoff',
@@ -526,7 +477,6 @@ async function main() {
 	      designPrepare.nodeId,
 	      '--auto-grouping',
 	    ])
-	    assert.match(autoGroupingHandoff.commands.rawSlothD2c, /--auto-grouping/)
 	    assert.match(autoGroupingHandoff.commands.generateChunks, /--auto-grouping/)
 	    const fakeSlothBin = await createFakeSlothBin()
 	    const prepared = await runCli(
@@ -565,24 +515,6 @@ async function main() {
 	    assert.equal('commands' in prepared, false)
 	    assert.equal('d2cDir' in prepared, false)
 	    assert.equal('copiedFiles' in prepared, false)
-	    const defaultGuide = await runCli([
-	      'workflow-guide',
-	      '--workspace',
-	      designPrepare.workspace,
-	      '--file-key',
-	      designPrepare.fileKey,
-	      '--node-id',
-	      designPrepare.nodeId,
-	    ])
-	    assert.equal(defaultGuide.guide[0].step, 'prepare-first-run')
-	    assert.equal(defaultGuide.guide[0].command, defaultHandoff.commands.prepareFirstRun)
-	    assert.equal(defaultGuide.codexBrowserOpen.enabled, true)
-	    assert.equal(defaultGuide.codexBrowserOpen.skill, defaultHandoff.codexBrowserOpen.skill)
-	    assert.equal(defaultGuide.codexBrowserOpen.target, defaultHandoff.codexBrowserOpen.target)
-	    assert.equal(defaultGuide.codexBrowserOpen.urlSource, defaultHandoff.codexBrowserOpen.urlSource)
-	    assert.equal(defaultGuide.guide[0].codexBrowserOpen.enabled, true)
-	    assert.equal(defaultGuide.guide[0].codexBrowserOpen.skill, defaultHandoff.codexBrowserOpen.skill)
-	    assert.match(defaultGuide.guide[0].codexBrowserOpen.url, /localhost:3100\/auth-page/)
 	    const silentHandoff = await runCli([
 	      'workflow-handoff',
 	      '--workspace',
@@ -595,23 +527,9 @@ async function main() {
 	    ])
 	    assert.equal(silentHandoff.interceptorMode, 'silent')
 	    assert.equal(silentHandoff.commands.prepareFirstRun, null)
-	    assert.match(silentHandoff.commands.firstRun, /sloth.*d2c/)
-	    assert.match(silentHandoff.commands.firstRun, /--silent/)
+	    assert.match(silentHandoff.commands.generateChunks, /ensure-initial-chunks/)
 	    assert.equal(silentHandoff.codexBrowserOpen, null)
 	    assert.match(silentHandoff.recommendedAction, /Do not open the interceptor/)
-	    const silentGuide = await runCli([
-	      'workflow-guide',
-	      '--workspace',
-	      designPrepare.workspace,
-	      '--file-key',
-	      designPrepare.fileKey,
-	      '--node-id',
-	      designPrepare.nodeId,
-	      '--silent',
-	    ])
-	    assert.equal(silentGuide.mode, 'silent-first-run')
-	    assert.equal(silentGuide.guide[0].step, 'generate-chunks-silently')
-	    assert.equal(silentGuide.guide[0].command, silentHandoff.commands.firstRun)
 	    const submittedFirstRun = await createDesignPrepareWorkspace()
 	    try {
 	      const submittedChunksDir = path.join(d2cDir(submittedFirstRun.workspace, submittedFirstRun.fileKey, submittedFirstRun.nodeId), 'chunks')
@@ -702,23 +620,6 @@ async function main() {
 	    assert.match(handoff.commands.startWorkflowDev, /start-workflow-dev\.mjs/)
 	    assert.match(handoff.stopCondition, /blocking wait\.command/)
 	    assert.match(handoff.stopCondition, /no business timeout/)
-	    const guide = await runCli([
-      'workflow-guide',
-      '--workspace',
-      designPrepare.workspace,
-      '--file-key',
-      designPrepare.fileKey,
-      '--node-id',
-      designPrepare.nodeId,
-      '--dev-port',
-      '59999',
-	    ])
-	    const firstStep = guide.guide[0]
-	    assert.equal(firstStep.step, 'prepare-first-run')
-	    assert.equal(firstStep.command, handoff.commands.startWorkflowDev)
-	    const waitStep = guide.guide.find((step) => step.step === 'wait-or-handle-event')
-	    assert.equal(waitStep.status, 'waiting')
-	    assert.equal(waitStep.command, null)
 	  } finally {
 	    await fs.rm(designPrepare.workspace, { recursive: true, force: true })
 	  }

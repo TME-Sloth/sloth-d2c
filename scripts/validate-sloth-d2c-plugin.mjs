@@ -59,6 +59,14 @@ async function main() {
     }
   }
 
+  const designDiffSkill = await fs.readFile(path.join(pluginRoot, 'skills/sloth-d2c-design-diff/SKILL.md'), 'utf8')
+  const workflowSkill = await fs.readFile(path.join(pluginRoot, 'skills/sloth-d2c-workflow/SKILL.md'), 'utf8')
+  assert(designDiffSkill.includes('## 轻量自检'), 'design-diff skill must define the quick self-check path')
+  assert(designDiffSkill.includes('不自动升级为完整分析'), 'design-diff quick self-check must not escalate automatically')
+  assert(designDiffSkill.includes('## 完整分析'), 'design-diff skill must define the full analysis path')
+  assert(designDiffSkill.includes('不要反复追逐低风险差异'), 'design-diff full analysis must stop after material differences converge')
+  assert(workflowSkill.includes('进行轻量截图自检'), 'workflow first generation must request the quick design-diff self-check')
+
   console.log(`Sloth D2C plugin validation passed: ${pluginRoot}`)
 }
 
