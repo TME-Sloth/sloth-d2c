@@ -1,6 +1,6 @@
 ---
 name: sloth-d2c-auto-grouping
-description: "执行 Sloth D2C 自动分组任务。用于处理 subAgentTask-autoGrouping-*.md、autoGroupingHandoff.requiresAutoGrouping、groupsData.json、拦截页等待自动分组、AI 自动分组或要求 subAgent 生成分组文件的场景。必须使用本 skill 读取本地 task 并把最终分组 JSON 写入 groupsData.json，不要把完整分组 JSON 通过聊天返回。"
+description: "执行 Sloth D2C 自动分组任务。用于处理 subAgentTask-autoGrouping-*.md、handle_subagent_task、groupsData.json、拦截页等待自动分组、AI 自动分组或要求 subAgent 生成分组文件的场景。必须使用本 skill 读取本地 task 并把最终分组 JSON 写入 groupsData.json，不要把完整分组 JSON 通过聊天返回。"
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep
 disable: false
 ---
@@ -17,8 +17,7 @@ disable: false
 
 - 用户明确提到 `$sloth-d2c-auto-grouping`
 - 用户要求处理 `subAgentTask-autoGrouping-*.md`
-- 用户要求处理 `autoGroupingHandoff`
-- `workflow-handoff` / `sloth d2c --auto-grouping --json` 返回 `requiresAutoGrouping=true`
+- `sloth d2c --auto-grouping --json` 返回 `action: "handle_subagent_task"` 且 `task.skill: "sloth-d2c-auto-grouping"`
 - 拦截页显示“等待 Agent 完成自动分组”，需要写入 `groupsData.json`
 - 用户要求 AI 自动分组、自动划分模块、把分组结果写入本地文件
 
@@ -28,10 +27,10 @@ disable: false
 
 优先从用户 prompt、上游 JSON 或 `subAgentTask-autoGrouping-*.md` frontmatter 中提取：
 
-- `taskPath`: `subAgentTask-autoGrouping-*.md` 的绝对路径
+- `task.path`: `subAgentTask-autoGrouping-*.md` 的绝对路径
 - `groupsDataPath`: `groupsData.json` 的绝对路径
 - `screenshotPath`: 可选设计稿截图
-- `rerunCommand`: 可选后续命令
+- `resumeCommand`: 可选后续命令
 
 如果只给了 task 文件，完整读取 task；优先使用 frontmatter 中的 `outputPath`，缺失时从正文中的路径提取。
 
@@ -87,6 +86,6 @@ disable: false
 - 分组数量
 - 主要分组名
 - 校验结果
-- 如果存在 `rerunCommand`，提醒主流程可以继续运行
+- 如果存在 `resumeCommand`，提醒主流程可以继续运行
 
 不要在聊天中粘贴完整 `groupsData` JSON。完整结果只存在本地 `groupsData.json`。

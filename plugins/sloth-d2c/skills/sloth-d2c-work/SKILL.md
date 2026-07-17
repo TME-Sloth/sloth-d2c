@@ -53,13 +53,13 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs annotation-workflow \
 - `eventId` 是本次处理边界；即使本地还有其它 pending event，也不要顺手处理。
 - 对 `annotation.submitted`，只消费事件里的 `changedCanvasAnnotations`，并且只处理 `target=implementation` 的标注。
 - 默认不要读取 `work/snapshots/*.json` 的全量内容；只有事件缺少 changed annotations 或明确需要恢复某个分组上下文时，才读取对应 snapshot。
-- 对 `diff.confirmed` 或 `repair.requested`，按事件摘要修复；只有事件明确要求视觉 diff 时才进入 `sloth-d2c-design-diff`。
+- 对 `diff.confirmed`，把当前 `eventId` 和聚焦事件上下文交给 subAgent，使用 `sloth-d2c-design-diff` 处理。对 `repair.requested`，仅在事件明确要求视觉 diff 时使用该 skill，否则按普通修复处理。
 - 修改本地生成代码/样式后，运行一个能证明改动生效的最小检查。Sloth 拦截页必须常驻；不要把 Codex in-app browser、Browser 工具或用户正在看的 Chrome 标签页导航到 `implementationUrl`。
 - 需要验证真实预览时，使用一次性 Playwright/Puppeteer/headless 浏览器、HTTP smoke check、项目 e2e/smoke 脚本或直接读取源代码事件绑定；不要把当前 Sloth 拦截页切到业务预览页。
 - 修复已有实现时，保留并增量修改真实项目组件结构。不要为了快速过预览，把 `.sloth/.../absolute.html`、整段原始 HTML、iframe、`srcDoc`、`dangerouslySetInnerHTML` 或缩放外壳塞进页面；这类做法不算完成事件，也不要 ack。
 - 修复时继续遵循首次生成使用的 chunk prompts：group chunk 的模块边界、`codeAggregation.md` 的装配关系、`finalGenerate.md` 的最终页面要求仍是约束。除非事件明确要求重构，否则不要绕开这些约束另写一套实现。
 - 交互类标注优先在真实预览页用 role、label、visible text、test id 或稳定 selector 触发并断言状态变化；只有问题明确出在 Sloth 外层标注层/生成预览容器时，才检查 Sloth 页 DOM。
-- 普通交互/文案/样式标注不要默认截图、不要默认跑 `design-diff`。
+- 普通交互、文案或样式标注不要默认截图，也不要默认使用视觉对比 skill。
 - 请求真正完成前不要 ack。
 - 中间进度保持简短；不要逐条播报每个命令和尝试。最终只汇报处理的 event、改动文件、检查结果和 ack 状态，不要贴 `implementationUrl`、真实业务页 URL 或本地 Vite URL。若必须提供可打开入口，只提供 Sloth 拦截页 URL。
 

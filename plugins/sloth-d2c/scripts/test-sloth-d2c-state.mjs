@@ -32,6 +32,10 @@ async function writeJson(filePath, value) {
   await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
 }
 
+async function appendWorkEvent(workspace, fileKey, nodeId, event) {
+  await fs.appendFile(path.join(workDir(workspace, fileKey, nodeId), 'events.jsonl'), `${JSON.stringify(event)}\n`, 'utf8')
+}
+
 async function runCli(args, options = {}) {
   const { stdout } = await execFileAsync(process.execPath, [scriptPath, ...args], {
     maxBuffer: 10 * 1024 * 1024,
@@ -42,6 +46,36 @@ async function runCli(args, options = {}) {
     },
   })
   return JSON.parse(stdout)
+}
+
+function runWorkflowHandoff(workspace, fileKey, nodeId, devPort) {
+  return runCli([
+    'workflow-handoff',
+    '--workspace',
+    workspace,
+    '--file-key',
+    fileKey,
+    '--node-id',
+    nodeId,
+    '--dev-port',
+    String(devPort),
+  ])
+}
+
+function completeTestEvent(workspace, fileKey, nodeId, eventId, summary) {
+  return runCli([
+    'complete-event',
+    '--workspace',
+    workspace,
+    '--file-key',
+    fileKey,
+    '--node-id',
+    nodeId,
+    '--event-ids',
+    eventId,
+    '--summary',
+    summary,
+  ])
 }
 
 async function waitFor(predicate, timeoutMs = 2000) {
@@ -177,33 +211,13 @@ function valueOf(name) {
 }
 const fileKey = valueOf('--file-key');
 const nodeId = valueOf('--node-id');
-const workspace = process.env.SLOTH_WORKSPACE_ROOT;
-const d2cDir = workspace + '/.sloth/' + fileKey + '/' + nodeId;
 const runId = 'd2c-run-test';
 console.log(JSON.stringify({
   ok: true,
-  mode: 'interactive',
   action: 'open_browser_and_wait',
-  prepared: true,
   interceptorUrl: 'http://localhost:3100/auth-page?token=sloth-d2c-test-token&fileKey=' + encodeURIComponent(fileKey) + '&nodeId=' + encodeURIComponent(nodeId) + '&mode=create',
-  handoffPaths: {
-    tasksDir: d2cDir + '/tasks',
-    submissionPath: d2cDir + '/submission.json',
-    chunksDir: d2cDir + '/chunks'
-  },
   wait: {
-    runId,
-    command: "sloth d2c wait --file-key '" + fileKey + "' --node-id '" + nodeId + "' --run-id '" + runId + "' --json",
-    events: ['task', 'submitted', 'failed']
-  },
-  forbidden: ['submit_interceptor', 'generate_code_before_submission', 'write_implementation_url_before_generation'],
-  codexBrowserOpen: {
-    enabled: true,
-    target: 'iab',
-    skill: 'browser:control-in-app-browser',
-    url: 'http://localhost:3100/auth-page?token=sloth-d2c-test-token&fileKey=' + encodeURIComponent(fileKey) + '&nodeId=' + encodeURIComponent(nodeId) + '&mode=create',
-    urlSource: 'interceptorUrl',
-    afterOpen: 'wait-for-sloth-event'
+    command: "sloth d2c wait --file-key '" + fileKey + "' --node-id '" + nodeId + "' --run-id '" + runId + "' --json"
   }
 }));
 `,
@@ -284,42 +298,56 @@ async function main() {
     assert.deepEqual(complete.acknowledgedEventIds, ['evt_annotation'])
     assert.deepEqual(complete.state.handledEventIds, ['evt_seed', 'evt_annotation'])
 
-    const screenshotTarget = await runCli([
-      'implementation-screenshot-target',
+    await appendWorkEvent(workspace, fileKey, nodeId, {
+      id: 'evt_diff',
+      type: 'diff.confirmed',
+      source: 'human',
+      payload: { summary: '确认视觉差异', intent: 'visual-diff' },
+    })
+    const diffHandoff = await runWorkflowHandoff(workspace, fileKey, nodeId, address.port)
+    assert.equal(diffHandoff.workflowPhase.phase, 'design_diff_requested')
+    assert.equal(diffHandoff.nextEvent.id, 'evt_diff')
+    assert.equal(diffHandoff.eventBrief.event.id, 'evt_diff')
+    assert.match(diffHandoff.recommendedAction, /sloth-d2c-design-diff/i)
+    const diffGuide = await runCli([
+      'workflow-guide',
       '--workspace',
       workspace,
       '--file-key',
       fileKey,
       '--node-id',
       nodeId,
-      '--label',
-      'preview_check',
     ])
-    assert.equal(screenshotTarget.screenshotPath, path.join(d2cDir(workspace, fileKey, nodeId), 'screenshots', 'implementation', 'preview_check.png'))
-    await assert.rejects(fs.stat(path.join(workDir(workspace, fileKey, nodeId), 'implementation-screenshots')), /ENOENT/)
+    const completeDiffStep = diffGuide.guide.find((step) => step.step === 'complete-event')
+    assert.equal(completeDiffStep.command, null)
+    assert.match(completeDiffStep.action, /No additional complete-event step is needed/i)
 
-    const designDiff = await runCli([
-      'design-diff',
-      '--workspace',
-      workspace,
-      '--file-key',
-      fileKey,
-      '--node-id',
-      nodeId,
-      '--label',
-      'design-diff',
-    ])
-    assert.equal(designDiff.mode, 'ready-for-agent-capture-and-review')
-    assert.equal(designDiff.baseline, path.join(d2cDir(workspace, fileKey, nodeId), 'screenshots', 'index.png'))
-    assert.equal(designDiff.implementationUrl, 'http://127.0.0.1:9999/')
-    assert.equal(designDiff.candidatePath, path.join(d2cDir(workspace, fileKey, nodeId), 'screenshots', 'implementation', 'design-diff.png'))
-    assert.equal(designDiff.captureSpec.url, designDiff.implementationUrl)
-    assert.equal(designDiff.captureSpec.screenshotPath, designDiff.candidatePath)
-    assert.equal(designDiff.captureSpec.matchBaselineWidth, true)
-    assert.equal(designDiff.captureSpec.fullPage, true)
-    assert.equal(designDiff.captureSpec.freshCaptureRequired, true)
-    assert.equal(designDiff.commands, undefined)
-    assert.match(designDiff.instructions.join(' '), /do not run design-diff a second time/i)
+    await completeTestEvent(workspace, fileKey, nodeId, 'evt_diff', 'handled visual diff')
+
+    await appendWorkEvent(workspace, fileKey, nodeId, {
+      id: 'evt_diff_mixed',
+      type: 'diff.confirmed',
+      source: 'human',
+      payload: { intent: 'visual-diff' },
+    })
+    await appendWorkEvent(workspace, fileKey, nodeId, {
+      id: 'evt_annotation_mixed',
+      type: 'annotation.submitted',
+      source: 'human',
+      payload: { intent: 'annotation-fix' },
+    })
+    const mixedHandoff = await runWorkflowHandoff(workspace, fileKey, nodeId, address.port)
+    assert.equal(mixedHandoff.workflowPhase.phase, 'implementation_annotations_requested')
+    assert.equal(mixedHandoff.workflowPhase.eventId, 'evt_annotation_mixed')
+    assert.equal(mixedHandoff.nextEvent.id, 'evt_annotation_mixed')
+    assert.equal(mixedHandoff.eventBrief.event.id, 'evt_annotation_mixed')
+    assert.ok(mixedHandoff.commands.eventBrief.includes("'--event-id' 'evt_annotation_mixed'"))
+    await completeTestEvent(workspace, fileKey, nodeId, 'evt_annotation_mixed', 'handled focused annotation')
+    const remainingMixedHandoff = await runWorkflowHandoff(workspace, fileKey, nodeId, address.port)
+    assert.equal(remainingMixedHandoff.workflowPhase.phase, 'design_diff_requested')
+    assert.equal(remainingMixedHandoff.nextEvent.id, 'evt_diff_mixed')
+    assert.ok(remainingMixedHandoff.commands.eventBrief.includes("'--event-id' 'evt_diff_mixed'"))
+    await completeTestEvent(workspace, fileKey, nodeId, 'evt_diff_mixed', 'handled remaining visual diff')
 
     const autoResolvedOpen = await runCli([
       'open-interceptor',
@@ -427,21 +455,6 @@ async function main() {
 
   const designPrepare = await createDesignPrepareWorkspace()
   try {
-    const blockedDesignDiff = await runCli([
-      'design-diff',
-      '--workspace',
-      designPrepare.workspace,
-      '--file-key',
-      designPrepare.fileKey,
-      '--node-id',
-      designPrepare.nodeId,
-    ])
-    assert.equal(blockedDesignDiff.mode, 'blocked')
-    assert.deepEqual(
-      blockedDesignDiff.blockers.map((blocker) => blocker.code),
-      ['baseline-missing', 'implementation-url-missing'],
-    )
-
     const defaultHandoff = await runCli([
       'workflow-handoff',
       '--workspace',
@@ -538,21 +551,20 @@ async function main() {
 	    assert.match(prepared.command, /sloth.*d2c/)
 	    assert.equal(prepared.interceptorUrl, `http://localhost:3100/auth-page?token=sloth-d2c-test-token&fileKey=${designPrepare.fileKey}&nodeId=${designPrepare.nodeId}&mode=create`)
 	    assert.equal(prepared.codexBrowserOpen.url, prepared.interceptorUrl)
-	    assert.equal(prepared.codexBrowserOpen.urlSource, 'interceptorUrl')
-	    assert.equal(prepared.wait.runId, 'd2c-run-test')
+	    assert.equal(prepared.codexBrowserOpen.urlSource, 'prepare-interceptor.interceptorUrl')
 	    assert.match(prepared.wait.command, /sloth d2c wait/)
-	    assert.deepEqual(prepared.wait.events, ['task', 'submitted', 'failed'])
+	    assert.deepEqual(Object.keys(prepared.wait), ['command'])
 	    assert.equal('listenerStatus' in prepared, false)
 	    assert.equal('pollTargets' in prepared, false)
 	    assert.equal('pollPolicy' in prepared, false)
 	    assert.match(prepared.stopCondition, /no business timeout/)
-	    assert.match(prepared.handoffPaths.tasksDir, /tasks$/)
-	    assert.match(prepared.handoffPaths.submissionPath, /submission\.json$/)
-	    assert.match(prepared.handoffPaths.chunksDir, /chunks$/)
+	    assert.equal('prepared' in prepared, false)
+	    assert.equal('reason' in prepared, false)
+	    assert.equal('handoffPaths' in prepared, false)
+	    assert.equal('forbidden' in prepared, false)
 	    assert.equal('commands' in prepared, false)
 	    assert.equal('d2cDir' in prepared, false)
 	    assert.equal('copiedFiles' in prepared, false)
-	    assert.deepEqual(prepared.forbidden, ['submit_interceptor', 'generate_code_before_submission', 'write_implementation_url_before_generation'])
 	    const defaultGuide = await runCli([
 	      'workflow-guide',
 	      '--workspace',

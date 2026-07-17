@@ -5,7 +5,7 @@ description: '用于通过 Sloth 拦截页运行端到端 Sloth D2C 工作流，
 
 # Sloth D2C 工作流
 
-用于连接 Codex 与 Sloth D2C 拦截页。拦截页是用户交互界面；首次转码属于准备与生成阶段，写入 `implementationUrl` 后进入 work。Codex 环境下先运行 `commands.prepareFirstRun`，它会运行正常的 `sloth d2c` 准备 REST/local 设计数据并返回顶层 `interceptorUrl` 和阻塞式 `wait.command`。首次提交是人工门禁：用户必须自己在拦截页确认配置、分组和标注后点击生成。等待命令返回 `submitted` 后，直接消费返回的 `chunksDir` 生成初版实现。进入 work 后，通过插件脚本读写目标项目的 `.sloth/<fileKey>/<nodeId>/work/` 状态。
+用于连接 Codex 与 Sloth D2C 拦截页。拦截页是用户交互界面；首次转码属于准备与生成阶段，写入 `implementationUrl` 后进入 work。Codex 环境下先运行 `commands.prepareFirstRun`，它会运行正常的 `sloth d2c` 准备 REST/local 设计数据并返回顶层 `interceptorUrl` 和阻塞式 `wait.command`。首次提交是人工门禁：用户必须自己在拦截页确认配置、分组和标注后点击生成。等待命令返回 `action === "consume_chunks"` 后，直接消费返回的 `chunksDir` 生成初版实现。进入 work 后，通过插件脚本读写目标项目的 `.sloth/<fileKey>/<nodeId>/work/` 状态。
 
 进入 work 后，用户的继续处理 prompt 应尽量短，只传 `fileKey`、`nodeId`、`eventId`、`count`、`implementationUrl` 等定位字段。标注详情、当前阶段、已处理进度和 ack 状态都从目标项目本地 `.sloth/.../work/state.json`、`events.jsonl`、`snapshots/` 读取；如果当前 cwd 没有对应状态，应先定位真实生成 workspace，再处理事件。
 
@@ -75,14 +75,14 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs prepare-interceptor \
   --node-id <nodeId>
 ```
 
-读取 `ok`、`action`、`interceptorUrl`、`codexBrowserOpen`、`handoffPaths`、`wait` 和 `forbidden`。当 `ok === true` 且 `action === "open_browser_and_wait"` 时，立即按 `codexBrowserOpen` 打开 Codex 内置浏览器，然后执行 `wait.command`。该命令由全局 Sloth CLI 提供，会阻塞到返回 `task`、`submitted` 或 `failed`；没有业务超时，也不要手工扫描 `handoffPaths`。
+读取 `ok`、`action`、`interceptorUrl`、`codexBrowserOpen` 和 `wait`。当 `ok === true` 且 `action === "open_browser_and_wait"` 时，立即按 `codexBrowserOpen` 打开 Codex 内置浏览器，然后执行 `wait.command`。该命令会阻塞到返回 `handle_subagent_task`、`consume_chunks` 或 `error`；没有业务超时，也不要手工扫描 `.sloth` 文件。
 
 ### Agent 等待协议
 
 - `wait.command` 存活即表示当前 Agent 正在监听；连接结束即表示没有活跃监听。不向 `state.json` 写监听状态，也不创建额外状态文件。
-- 返回 `task` 时，按 `taskPath` 派发对应 Skill。成功后校验产物并删除任务文件，再重新执行同一个 `wait.command`；失败时保留任务文件并报告，不要立即重入造成重复任务。
-- 返回 `submitted` 时直接消费事件里的 `chunksDir`；返回 `failed` 时报告 `error` 并停止。
-- Agent 主动离开等待时终止 CLI 即可。页面事件未交付给活跃 waiter 时，会自动复制续跑提示词并提示用户粘贴；已交付时不复制。
+- 返回 `action === "handle_subagent_task"` 时，按 `task.skill` 派发 `task.path`。成功后校验产物并删除任务文件，再重新执行同一个 `wait.command`；失败时保留任务文件并报告，不要立即重入造成重复任务。
+- 返回 `action === "consume_chunks"` 时直接消费 `chunksDir`；返回 `action === "error"` 或 `ok === false` 时报告 `error` 并停止。
+- Agent 主动离开等待时终止 CLI 即可。首次配置阶段不根据 waiter 状态复制续跑提示词；进入 work 阶段后，页面事件未交付给活跃 waiter 时才复制并提示用户粘贴。
 - 用户粘贴续跑提示词后，重新执行原 `wait.command`。任务或提交先持久化、后尝试交付，所以已发生的事件会立即返回，不会丢失。
 
 如果返回 `action === "install_sloth_cli"`，按返回的 `command` 安装后重新运行 `prepare-interceptor`。如果返回 `action === "handle_pending_event"` 或 `action === "continue_existing_workflow"`，说明已经不是首次准备阶段，改按返回的 `workflowPhase` / `eventBrief` 继续后续生成或 work。
@@ -107,31 +107,31 @@ node <plugin-root>/scripts/sloth-d2c-state.mjs workflow-handoff \
 1. 运行 `prepare-interceptor`，让它执行首次 `sloth d2c` 准备、拉取 REST 数据或读取本地缓存，并写入目标项目 `.sloth/<fileKey>/<nodeId>/` 的基础设计数据。
 2. 按 `codexBrowserOpen` 打开命令返回的顶层 `interceptorUrl`，不是预先返回的 `commands.openUrl`。
 3. 保持浏览器停在拦截页，把页面控制权交给用户，然后立即执行返回的 `wait.command`。不要检查提交按钮是否可用后自行点击，不要用 DOM selector、坐标点击、快捷键或脚本触发表单提交。
-4. 等待命令返回 `submitted` 后直接消费 `chunksDir` 并进入首次生成，无需用户回复“继续”；返回 `failed` 时读取 `error` 并停止。
+4. 等待命令返回 `action === "consume_chunks"` 后直接消费 `chunksDir` 并进入首次生成，无需用户回复“继续”；返回 `action === "error"` 时读取 `error` 并停止。
 5. 如果生成了数字 group chunk prompts，优先使用 subagents 并行处理它们。
 6. 使用最终 prompt 写入可运行的项目文件。
 
 ### 处理等待事件
 
-交互模式下，Agent 只消费 `wait.command` 返回的事件；`handoffPaths` 用于定位和校验持久化产物，不作为轮询目标：
+交互模式下，Agent 只消费 `wait.command` 返回的 action，不手工扫描 `.sloth` 目录作为轮询目标：
 
-1. 返回 `task` 时，确认 `taskPath` 的 frontmatter 中 `status: pending`，按 `skill` 或 `type` 派发聚焦 subagent，并把 task 文件路径交给它。
+1. 返回 `action === "handle_subagent_task"` 时，确认 `task.path` 的 frontmatter 中 `status: pending`，按 `task.skill` 派发聚焦 subagent，并把该路径交给它。
 2. subagent 完成后，只重新读取它声明的本地产物，例如 `groupsData.json` 或项目根 `.sloth/components.json`；不要在主上下文展开 task 正文里的大提示词。任务成功后对应 `subAgentTask-*.md` 必须被删除；失败则保留用于重试。
 3. `groupsData.json` 只表示已有分组数据，不表示用户已经确认提交；没有 `submission.json` 时不要生成 chunks 或代码。
-4. `submission.json` 仍是持久化的首次提交结果，但流程以 `submitted` 事件为入口；收到后直接进入首次实现。`failed` 事件携带错误信息并终止本轮。
-5. 等待命令不设业务超时。处理完任务后重新执行同一个命令继续阻塞；如果 Agent 主动停止等待，直接终止 CLI。此后页面点击“AI 自动分组”“导入组件”或“提交”时，如果事件未交付给活跃 waiter，就复制续跑提示词并提示用户粘贴。
+4. `submission.json` 仍是持久化的首次提交结果，但流程以 `action === "consume_chunks"` 为入口；收到后直接进入首次实现。`action === "error"` 携带错误信息并终止本轮。
+5. 等待命令不设业务超时。处理完任务后重新执行同一个命令继续阻塞；如果 Agent 主动停止等待，直接终止 CLI。首次配置阶段页面不根据 waiter 状态复制 Prompt；进入 work 阶段后，事件未交付给活跃 waiter 时才复制续跑提示词并提示用户粘贴。
 
 静默模式（`interceptorMode: "silent"`）下，跳过上述 2–4 步：直接运行 `commands.firstRun` 生成 chunks，并在同一回合继续 5–6 步；首次生成阶段不要打开拦截页。
 
 首次实现按顺序消费已有 prompts：先处理数字 group chunk 文件，例如 `0.md`、`1.md`，再处理 `codeAggregation.md` 和 `finalGenerate.md`。交互模式在 `submission.json` 提交完成后直接进入这一步；静默模式由 `commands.firstRun` 生成 prompts 后进入。
 
-如果用户在 Skill/拦截页路径启用了“自动分组 / AI 分组”，并收到指向 `tasks/subAgentTask-autoGrouping-*.md` 的 `task` 事件，或 `autoGroupingHandoff.requiresAutoGrouping=true`，不要把自动分组细节写在本 workflow 里，也不要把任务提示词全量读入主上下文。把 task 文件交给聚焦 subagent 使用 `$sloth-d2c-auto-grouping` 处理。主 agent 只重新读取本地 `groupsData.json` 确认结果；任务成功后必须删除对应 `subAgentTask-autoGrouping-*.md`，失败则保留用于重试。拦截页会自动读取结果并反填；静默首次生成路径则在文件写入后继续运行 `autoGroupingHandoff.rerunCommand` 生成 chunks。
+如果用户在 Skill/拦截页路径启用了“自动分组 / AI 分组”，并收到 `action === "handle_subagent_task"` 且 `task.skill === "sloth-d2c-auto-grouping"`，不要把自动分组细节写在本 workflow 里，也不要把任务提示词全量读入主上下文。把 `task.path` 交给聚焦 subagent 使用 `$sloth-d2c-auto-grouping` 处理。主 agent 只重新读取本地 `groupsData.json` 确认结果；任务成功后必须删除对应 `subAgentTask-autoGrouping-*.md`，失败则保留用于重试。拦截页会自动读取结果并反填；静默首次生成路径则在文件写入后执行返回的 `resumeCommand` 生成 chunks。
 
 有数字 group chunk 时，建议把 chunk 转码工作拆给 subagents：每个 subagent 只处理一个或一小组独立的 group chunk，返回组件代码、依赖资源、样式要点和风险。一般最多同时派发 6 个 subagents；group chunks 多于 6 个时可分批派发。若当前运行环境没有可用 subagent 能力，或任务规模很小，也可以由主 agent 直接处理，并在收尾说明采用了哪种路径。
 
 实现必须遵循 chunks 里的提示词，而不是只把 chunks 当参考资料扫一眼。处理顺序是：如果存在数字 group chunk（如 `0.md`、`1.md`），先生成对应模块/组件；然后按 `codeAggregation.md` 组织组件关系、数据流和依赖；最后按 `finalGenerate.md` 完成最终页面写入、样式整合和验收要求。不要跳过、改写或选择性忽略 chunk prompt 中的约束；如果 chunk prompt 和个人判断冲突，优先说明冲突并按 prompt 约束实现。
 
-如果 chunk 目录的上级目录存在 `tasks/subAgentTask-componentRegistration-*.md`，首次实现写入真实组件后必须消费组件登记任务。把 task 文件交给 `$sloth-d2c-components`，用实际写入的组件名、路径、import、props 和描述合并项目根目录 `.sloth/components.json`，并保留 task 中的 `signature` 供后续截图匹配。任务成功后必须删除对应 `subAgentTask-componentRegistration-*.md`；失败则保留用于重试。Skills / Codex plugin 场景不要调用 MCP `mark_components` 工具；组件登记通过本地文件写入完成。
+如果 chunk 目录的上级目录存在 `tasks/subAgentTask-componentRegistration-*.md`，首次实现写入真实组件后必须消费组件登记任务。把 task 文件交给 `$sloth-d2c-components`，用实际写入的组件名、路径、import、props 和描述合并项目根目录 `.sloth/components.json`，并保留 task 中的 `signature` 供后续截图匹配。任务成功后必须删除对应 `subAgentTask-componentRegistration-*.md`；失败则保留用于重试。组件登记通过本地文件完成，不调用 MCP `mark_components` 工具。
 
 `absolute.html` 是设计稿快照/坐标参考，不是可交付实现。可以读取它来理解布局、文案、图片资源和元素位置，但不要把它整页塞进 React/Vue/页面里，也不要用 iframe、`srcDoc`、`dangerouslySetInnerHTML`、原始 HTML 字符串或“外层缩放壳”包装它来冒充实现。首次实现必须消费 chunks/prompts，写入目标项目的真实组件、样式、资源引用和交互代码。
 
@@ -158,9 +158,9 @@ Codex 内置浏览器应保持在 Sloth 拦截页，避免把用户的 Sloth 拦
 
 ### `design_prepare`
 
-交互模式：先运行 `prepare-interceptor`。它会运行 `sloth d2c --json`，准备 REST/local 设计数据，同步项目 `.sloth` 基础文件，并返回顶层 `interceptorUrl`、`handoffPaths` 和 `wait`。按 `codexBrowserOpen` 在 Codex 内置浏览器中打开这个返回 URL，然后执行 `wait.command`。收到 `task` 就处理、校验、删除任务并再次等待；收到 `submitted` 就在同一回合直接消费 chunks 并继续首次生成；收到 `failed` 就报告错误。
+交互模式：先运行 `prepare-interceptor`。它会运行 `sloth d2c --json`，准备 REST/local 设计数据，同步项目 `.sloth` 基础文件，并返回顶层 `interceptorUrl` 和 `wait`。按 `codexBrowserOpen` 在 Codex 内置浏览器中打开这个返回 URL，然后执行 `wait.command`。收到 `handle_subagent_task` 就处理、校验、删除任务并再次等待；收到 `consume_chunks` 就在同一回合直接消费 chunks 并继续首次生成；收到 `error` 就报告错误。
 
-收到 `submitted` 前不要生成 chunks、不要生成代码、不要启动目标应用、不要写入 `implementationUrl`、不要 ack 事件。等待连接本身就是监听事实，不写 `polling` / `wait` 状态，也没有业务超时。不要读取页面控件状态后代替用户点击“提交/生成”；页面已有默认配置或按钮可用也不代表已经提交。必须使用 `commands.prepareFirstRun` 返回的拦截页 URL，不要手动打开预先拼出来的拦截页 URL。
+收到 `action === "consume_chunks"` 前不要生成 chunks、不要生成代码、不要启动目标应用、不要写入 `implementationUrl`、不要 ack 事件。等待连接本身就是监听事实，不写 `polling` / `wait` 状态，也没有业务超时。不要读取页面控件状态后代替用户点击“提交/生成”；页面已有默认配置或按钮可用也不代表已经提交。必须使用 `commands.prepareFirstRun` 返回的拦截页 URL，不要手动打开预先拼出来的拦截页 URL。
 
 静默模式：运行 `commands.firstRun` 生成 chunks/prompts，校验 chunk 结构后在同一回合继续首次实现生成；不要打开拦截页，也不要等待用户提交。
 
@@ -175,10 +175,9 @@ Codex 内置浏览器应保持在 Sloth 拦截页，避免把用户的 Sloth 拦
 5. 主 agent 汇总 subagent 输出，再逐条消费 `codeAggregation.md` 和 `finalGenerate.md` 生成或更新目标实现。
 6. 启动或识别目标应用预览。技术 smoke check 应直接访问真实预览 URL，但使用一次性 Playwright/Puppeteer/headless 浏览器、HTTP smoke check 或项目测试脚本，不要覆盖 Codex 内置浏览器里的 Sloth 拦截页。
 7. 写入 `implementationUrl`。这一步才开始 work 状态，用于后续生成稿标注、diff 和修复事件。
-8. 首次实现转码后做截图 diff 验收：运行一次 `commands.designDiff`。若返回 `blocked`，先补齐 baseline 或 `implementationUrl`；若返回 `ready-for-agent-capture-and-review`，由 agent 按 `captureSpec` 使用一次性 Playwright/Puppeteer/headless 浏览器截取当前实现，然后直接查看 `baseline` 和 `candidatePath`，不要再运行 `design-diff --candidate`。视觉审查覆盖结构、文本、尺寸、间距、颜色、图片裁剪和页面高度，不使用像素级 diff 代替判断。
-9. 根据 agent 视觉差异修复目标实现代码，按同一 `captureSpec` 截取新的当前实现并复核，直到没有明显结构/文本/尺寸/裁剪/高度问题，或清楚记录剩余低优先级差异。
-10. 交互模式下，重新打开或保持 Sloth 拦截页在 Codex 内置浏览器中，通过拦截页查看生成预览和接收用户标注。静默模式的首次生成跳过此步。
-11. 运行聚焦校验；真实实现的可访问性/交互/状态变化应在 `implementationUrl` 上验证。交互模式或 work 阶段才用 Sloth 拦截页验证工作流容器和标注入口。
+8. 首次实现完成后，直接派发 subAgent 使用 `sloth-d2c-design-diff` 进行视觉验收与必要修复。
+9. 交互模式下，重新打开或保持 Sloth 拦截页在 Codex 内置浏览器中，通过拦截页查看生成预览和接收用户标注。静默模式的首次生成跳过此步。
+10. 运行聚焦校验；真实实现的可访问性/交互/状态变化应在 `implementationUrl` 上验证。交互模式或 work 阶段才用 Sloth 拦截页验证工作流容器和标注入口。
 
 必需的 chunks/prompts 缺失时，不要仅凭截图手写首次实现。
 
@@ -190,11 +189,15 @@ Codex 内置浏览器应保持在 Sloth 拦截页，避免把用户的 Sloth 拦
 
 ### `implementation_annotations_requested`
 
-使用 `commands.eventBrief` 或 `annotation-workflow` 上下文处理当前事件。聚焦 `changedCanvasAnnotations`，尤其是 `target=implementation` 的标注；修改本地实现，运行一个最小必要检查，然后完成事件。普通交互、文案、间距或样式标注不要默认运行视觉对比；只有事件明确要求视觉 diff 时才使用 `sloth-d2c-design-diff`。
+使用 `commands.eventBrief` 或 `annotation-workflow` 上下文处理当前事件。聚焦 `changedCanvasAnnotations`，尤其是 `target=implementation` 的标注；修改本地实现，运行一个最小必要检查，然后完成事件。普通交互、文案、间距或样式标注不要默认运行视觉对比；事件明确要求视觉 diff 时直接使用 `sloth-d2c-design-diff`。
 
-### `design_diff_requested` / `repair_requested`
+### `design_diff_requested`
 
-使用事件摘要和视觉对比 helper 修复实现。如果请求来自用户事件，修复后完成该事件。
+直接把 `workspace`、`fileKey`、`nodeId`、`eventId` 和聚焦 `eventBrief` 交给 subAgent，使用 `sloth-d2c-design-diff` 处理。
+
+### `repair_requested`
+
+按事件摘要处理普通修复；`eventBrief` 明确要求视觉 diff 时，直接派发 subAgent 使用 `sloth-d2c-design-diff`。
 
 ## 事件语义
 
